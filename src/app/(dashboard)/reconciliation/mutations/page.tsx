@@ -410,7 +410,9 @@ function MutationsPageContent() {
             keterangan: m.description || '',
             noRef: m.reference_number || '-',
             reconciled: m.is_reconciled || false,
-            bankAccountId: m.bank_account_id
+            bankAccountId: m.bank_account_id,
+            branchId: m.branch_id || null,
+            categoryId: m.category_id || null
           }))
           setMutations(mapped)
         }
@@ -446,7 +448,9 @@ function MutationsPageContent() {
           keterangan: m.keterangan,
           noRef: m.noRef,
           reconciled: m.reconciled,
-          bankAccountId: m.bankAccountId
+          bankAccountId: m.bankAccountId,
+          branchId: m.branchId || null,
+          categoryId: m.categoryId || null
         }))
         setMutations(mapped.sort((a, b) => b.tanggal.getTime() - a.tanggal.getTime()))
       } catch (err) {
@@ -532,6 +536,8 @@ function MutationsPageContent() {
                   description: row.description,
                   reference_number: row.signature,
                   is_reconciled: isReconciled,
+                  branch_id: row.branchId || null,
+                  category_id: row.category_id || null,
                   created_by: profile?.id
                 })
                 .select()
@@ -559,22 +565,6 @@ function MutationsPageContent() {
                   .eq('id', row.matchedSaleId)
                 
                 if (updateReconError) throw updateReconError
-              }
-
-              // If expense categorized, create petty cash record
-              if (row.category_id && inserted && inserted.length > 0) {
-                const { error: insertPCError } = await supabase
-                  .from('petty_cash')
-                  .insert({
-                    branch_id: row.branchId || 'b1',
-                    transaction_date: row.dateStr,
-                    category_id: row.category_id,
-                    description: `[Auto-import Mutasi] ${row.description}`,
-                    amount: Math.abs(row.amount),
-                    type: 'expense',
-                    created_by: profile?.id
-                  })
-                if (insertPCError) throw insertPCError
               }
             }
 
@@ -609,7 +599,9 @@ function MutationsPageContent() {
             keterangan: row.description,
             noRef: row.signature,
             reconciled: isReconciled,
-            bankAccountId: selectedAccountId
+            bankAccountId: selectedAccountId,
+            branchId: row.branchId || null,
+            categoryId: row.category_id || null
           })
 
           // 2. If matched with daily sales reconciliation, update status
@@ -626,20 +618,6 @@ function MutationsPageContent() {
               localRecons[reconIndex].bankMutationId = newMutId
               localRecons[reconIndex].discrepancyAmount = diff
             }
-          }
-
-          // 3. If expense categorized, create petty cash record
-          if (row.category_id) {
-            localPC.push({
-              id: `pc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-              branchId: row.branchId || 'b1',
-              dateStr: row.dateStr,
-              type: 'expense',
-              categoryId: row.category_id,
-              description: `[Auto-import Mutasi] ${row.description}`,
-              amount: Math.abs(row.amount),
-              receiptPreview: ''
-            })
           }
 
           addedCount++

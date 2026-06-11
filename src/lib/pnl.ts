@@ -89,6 +89,26 @@ export async function getPnlData(month: number, year: number, branchId: string):
         hasActualPC = true
       }
 
+      // Fetch bank mutations expenses sum (outflows from mutations)
+      let mutsQuery = supabase!
+        .from('bank_mutations')
+        .select('amount')
+        .not('category_id', 'is', null)
+        .gte('mutation_date', startDate)
+        .lte('mutation_date', endDate)
+
+      if (branchId !== 'all') {
+        mutsQuery = mutsQuery.eq('branch_id', branchId)
+      }
+
+      const { data: mutsData, error: mutsError } = await mutsQuery
+      if (mutsError) throw mutsError
+      if (mutsData && mutsData.length > 0) {
+        const actualBankExpenses = mutsData.reduce((sum: number, row: { amount: string | number }) => sum + Math.abs(parseFloat(String(row.amount)) || 0), 0)
+        actualKasKecil += actualBankExpenses
+        hasActualPC = true
+      }
+
     } catch (err) {
       console.error('Failed to fetch transaction sums from Supabase:', err)
     }
@@ -122,6 +142,23 @@ export async function getPnlData(month: number, year: number, branchId: string):
         })
         if (filteredPC.length > 0) {
           actualKasKecil = filteredPC.reduce((sum: number, item: LocalPettyCashRecord) => sum + (item.amount || 0), 0)
+          hasActualPC = true
+        }
+      }
+
+      const localMutsStr: string | null = localStorage.getItem('raja-aksesoris-bank-mutations')
+      if (localMutsStr) {
+        const parsedMuts: any[] = JSON.parse(localMutsStr)
+        const filteredMuts = parsedMuts.filter((item: any) => {
+          const itemDate = new Date(item.tanggal)
+          const dateMatch = itemDate.getMonth() === (month - 1) && itemDate.getFullYear() === year
+          const branchMatch = branchId === 'all' || String(item.branchId) === String(branchId)
+          const hasCategory = !!item.categoryId
+          return dateMatch && branchMatch && hasCategory
+        })
+        if (filteredMuts.length > 0) {
+          const actualBankExpenses = filteredMuts.reduce((sum: number, item: any) => sum + Math.abs(item.jumlah || 0), 0)
+          actualKasKecil += actualBankExpenses
           hasActualPC = true
         }
       }

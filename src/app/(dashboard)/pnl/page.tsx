@@ -419,7 +419,7 @@ export default function PnlReportPage() {
                 </td>
               </tr>
               {[
-                { label: 'Biaya Operasional (Kas Kecil)', key: 'kasKecil', auto: true },
+                { label: 'Biaya Operasional (Kas & Bank)', key: 'kasKecil', auto: true },
                 { label: 'Gaji & Komisi Karyawan', key: 'gajiKomisi', auto: true },
                 { label: 'Sewa Toko', key: 'sewaToko', auto: false },
                 { label: 'Marketing / Iklan', key: 'marketing', auto: false },
