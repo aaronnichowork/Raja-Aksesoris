@@ -830,6 +830,85 @@ function MutationsPageContent() {
     setFormErrors({})
   }
 
+  const handleDeleteMutation = async (id: string) => {
+    if (!confirm('Hapus transaksi mutasi bank ini?')) return
+    setLoading(true)
+
+    try {
+      if (supabaseActive) {
+        const supabase = createClient()
+        if (supabase) {
+          // 1. Reset any reconciliation referencing this bank mutation
+          const { error: resetReconError } = await supabase
+            .from('reconciliations')
+            .update({
+              status: 'pending',
+              actual_amount: 0,
+              bank_mutation_id: null,
+              settlement_date: null,
+              discrepancy_amount: null
+            })
+            .eq('bank_mutation_id', id)
+          
+          if (resetReconError) {
+            console.error('Failed to reset linked reconciliation:', resetReconError)
+          }
+
+          // 2. Delete the bank mutation
+          const { error: deleteError } = await supabase
+            .from('bank_mutations')
+            .delete()
+            .eq('id', id)
+          
+          if (deleteError) throw deleteError
+        }
+      } else {
+        // Demo Mode (localStorage)
+        const localMutsStr = localStorage.getItem('raja-aksesoris-bank-mutations') || '[]'
+        let localMuts: any[] = JSON.parse(localMutsStr)
+        
+        const targetMut = localMuts.find(m => String(m.id) === String(id))
+
+        if (targetMut) {
+          // Remove the mutation
+          localMuts = localMuts.filter(m => String(m.id) !== String(id))
+          localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify(localMuts))
+
+          // Reset reconciliation if linked
+          const localReconsStr = localStorage.getItem('raja-aksesoris-reconciliations') || '[]'
+          const localRecons: any[] = JSON.parse(localReconsStr)
+
+          let reconChanged = false
+          const updatedRecons = localRecons.map(r => {
+            if (String(r.bankMutationId) === String(id) || String(r.id) === String(targetMut.noRef)) {
+              reconChanged = true
+              return {
+                ...r,
+                status: 'pending',
+                actualAmount: 0,
+                bankMutationId: null,
+                discrepancyAmount: null
+              }
+            }
+            return r
+          })
+
+          if (reconChanged) {
+            localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(updatedRecons))
+          }
+        }
+      }
+
+      toast.success('Mutasi bank berhasil dihapus.')
+      loadMutations()
+    } catch (err: any) {
+      console.error('Failed to delete bank mutation:', err)
+      toast.error(err.message || 'Gagal menghapus mutasi bank.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   /* ── Table Columns ──────────────────────────────────────────────── */
   const columns: TableColumn<MutationRow>[] = [
     {
@@ -857,6 +936,24 @@ function MutationsPageContent() {
         </Badge>
       ),
     },
+    {
+      key: 'aksi',
+      label: 'Aksi',
+      render: (_, row) => (
+        <button
+          className="btn btn-ghost btn-sm text-danger"
+          style={{ minHeight: '32px', padding: '4px 8px' }}
+          onClick={() => handleDeleteMutation(row.id)}
+          title="Hapus Transaksi"
+          aria-label="Hapus Transaksi"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '4px', verticalAlign: 'middle' }}>
+            <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" />
+          </svg>
+          Hapus
+        </button>
+      )
+    }
   ]
 
   /* ── Summary counts ─────────────────────────────────────────────── */
