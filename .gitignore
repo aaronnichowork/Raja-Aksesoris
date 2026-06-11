@@ -1,0 +1,28 @@
+# dependencies
+**/node_modules/
+**/.pnp
+.pnp.*
+
+# next.js
+**/.next/
+**/out/
+
+# production
+**/build/
+
+# env files
+.env*
+**/.env.local
+**/.env.production
+**/.env.development
+
+# debug logs
+*.log
+
+# IDEs
+.idea/
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db

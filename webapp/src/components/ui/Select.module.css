@@ -1,0 +1,86 @@
+.selectGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary, #A0A0B0);
+  margin-bottom: 2px;
+}
+
+.required {
+  color: #DC2626;
+  margin-left: 2px;
+}
+
+.selectWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.select {
+  width: 100%;
+  padding: 10px 36px 10px 14px;
+  font-size: 0.9375rem;
+  font-family: inherit;
+  line-height: 1.5;
+  color: var(--foreground, #171717);
+  background: var(--input-bg, rgba(255, 255, 255, 0.04));
+  border: 1.5px solid var(--border-color, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+  min-height: 44px;
+}
+
+.select:focus {
+  border-color: var(--color-primary, #FF6B00);
+  box-shadow: 0 0 0 3px rgba(255, 107, 0, 0.15);
+}
+
+.select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chevron {
+  position: absolute;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-tertiary, #6B7280);
+  pointer-events: none;
+}
+
+/* Error state */
+.selectGroup--error .select {
+  border-color: #DC2626;
+}
+.selectGroup--error .select:focus {
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
+}
+
+.error {
+  font-size: 0.8125rem;
+  color: #DC2626;
+  margin-top: 2px;
+}
+
+/* Disabled group */
+.selectGroup--disabled .label {
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .select {
+    transition: none;
+  }
+}

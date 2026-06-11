@@ -1,0 +1,133 @@
+.tableContainer {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 12px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.thead {
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.03));
+}
+
+.th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.8125rem;
+  color: var(--text-secondary, #A0A0B0);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  user-select: none;
+}
+
+.th--sortable {
+  cursor: pointer;
+}
+
+.th--sortable:hover {
+  color: var(--color-primary, #FF6B00);
+}
+
+.th--sortable:focus-visible {
+  outline: 2px solid var(--color-primary, #FF6B00);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.thContent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sortIcon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-tertiary, #6B7280);
+  transition: color 150ms ease;
+}
+
+.sortIcon--active {
+  color: var(--color-primary, #FF6B00);
+}
+
+.tbody {
+  /* intentionally empty for structure */
+}
+
+.row {
+  transition: background-color 150ms ease;
+}
+
+.row:hover {
+  background: var(--hover-bg, rgba(255, 107, 0, 0.04));
+}
+
+.td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+  color: var(--foreground, #171717);
+  vertical-align: middle;
+}
+
+.empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--text-tertiary, #6B7280);
+  font-style: italic;
+}
+
+/* Skeleton loading */
+.skeletonRow .td {
+  padding: 14px 16px;
+}
+
+.skeleton {
+  display: block;
+  height: 14px;
+  width: 70%;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-from, rgba(255, 255, 255, 0.06)) 0%,
+    var(--skeleton-to, rgba(255, 255, 255, 0.12)) 50%,
+    var(--skeleton-from, rgba(255, 255, 255, 0.06)) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+  .row {
+    transition: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .th,
+  .td {
+    padding: 10px 12px;
+    font-size: 0.8125rem;
+  }
+}

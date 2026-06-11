@@ -1,0 +1,159 @@
+.card {
+  position: relative;
+  padding: 20px;
+  border-radius: 16px;
+  background: var(--glass-bg, rgba(255, 255, 255, 0.04));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  transition: transform 200ms ease, box-shadow 200ms ease;
+  overflow: hidden;
+}
+
+.card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 107, 0, 0.03) 0%,
+    transparent 60%
+  );
+  pointer-events: none;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    transition: none;
+  }
+  .card:hover {
+    transform: none;
+  }
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary, #A0A0B0);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.iconWrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(255, 107, 0, 0.1);
+  color: #FF6B00;
+  flex-shrink: 0;
+}
+
+.valueRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.value {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--foreground, #ededed);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.trend {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.trend--up {
+  color: #22C55E;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.trend--down {
+  color: #EF4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.subtitle {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary, #6B7280);
+}
+
+/* Skeleton states */
+.skeletonIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--skeleton-from, rgba(255, 255, 255, 0.06));
+  margin-bottom: 12px;
+}
+
+.skeletonValue {
+  height: 28px;
+  width: 50%;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-from, rgba(255, 255, 255, 0.06)) 0%,
+    var(--skeleton-to, rgba(255, 255, 255, 0.12)) 50%,
+    var(--skeleton-from, rgba(255, 255, 255, 0.06)) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.skeletonLine {
+  height: 12px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-from, rgba(255, 255, 255, 0.06)) 0%,
+    var(--skeleton-to, rgba(255, 255, 255, 0.12)) 50%,
+    var(--skeleton-from, rgba(255, 255, 255, 0.06)) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonValue,
+  .skeletonLine {
+    animation: none;
+  }
+}
