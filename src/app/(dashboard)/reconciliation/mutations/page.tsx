@@ -105,20 +105,30 @@ function parseBCACSV(text: string, currentYear: number): { dateStr: string; desc
 
   const parseIndoNumber = (val: string): number => {
     let clean = val.replace(/[^0-9,\.-]/g, '').trim()
-    if (clean.includes('.') && clean.includes(',')) {
-      clean = clean.replace(/\./g, '').replace(/,/g, '.')
-    } else if (clean.includes(',')) {
-      const lastComma = clean.lastIndexOf(',')
-      const lastDot = clean.lastIndexOf('.')
-      if (lastComma > lastDot) {
-        const commaCount = (clean.match(/,/g) || []).length
-        if (commaCount === 1 && clean.length - lastComma <= 3) {
-          clean = clean.replace(/,/g, '.')
-        } else {
-          clean = clean.replace(/,/g, '')
-        }
+    const lastComma = clean.lastIndexOf(',')
+    const lastDot = clean.lastIndexOf('.')
+
+    if (lastComma !== -1 && lastDot !== -1) {
+      if (lastComma < lastDot) {
+        // US format: 1,381,500.00 -> remove commas
+        clean = clean.replace(/,/g, '')
+      } else {
+        // Indo format: 1.381.500,00 -> remove dots, replace comma with dot
+        clean = clean.replace(/\./g, '').replace(/,/g, '.')
+      }
+    } else if (lastComma !== -1) {
+      // Only has commas
+      const parts = clean.split(',')
+      if (parts.length === 2 && parts[1].length <= 2) {
+        clean = clean.replace(/,/g, '.')
       } else {
         clean = clean.replace(/,/g, '')
+      }
+    } else if (lastDot !== -1) {
+      // Only has dots
+      const parts = clean.split('.')
+      if (parts.length > 2 || (parts.length === 2 && parts[1].length > 2)) {
+        clean = clean.replace(/\./g, '')
       }
     }
     return parseFloat(clean) || 0
