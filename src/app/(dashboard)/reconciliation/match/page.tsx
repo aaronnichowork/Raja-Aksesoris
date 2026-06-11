@@ -1,9 +1,11 @@
 'use client'
 
-import React, { useState, useMemo, useCallback } from 'react'
+import React, { useState, useMemo, useCallback, useEffect } from 'react'
 import Link from 'next/link'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { Badge } from '@/components/ui'
+import { Badge, useToast } from '@/components/ui'
+import { isSupabaseConfigured, createClient } from '@/lib/supabase/client'
+import { useAuth } from '@/hooks/useAuth'
 
 /* ── SVG Icons ─────────────────────────────────────────────────────────── */
 
@@ -49,19 +51,19 @@ function IconLink() {
   )
 }
 
-/* ── Demo Data ─────────────────────────────────────────────────────────── */
+/* ── Interfaces ────────────────────────────────────────────────────────── */
 
-interface DemoSale {
+interface SaleRow {
   id: string
   date: Date
-  amount: number
+  amount: number // gross omset
   branch: string
   method: string
   mdr: number
-  net: number
+  net: number // expected settlement
 }
 
-interface DemoMutation {
+interface MutationRow {
   id: string
   date: Date
   amount: number
@@ -69,32 +71,10 @@ interface DemoMutation {
   ref: string
 }
 
-const DEMO_SALES: DemoSale[] = [
-  { id: 's1', date: new Date(2026, 5, 2), amount: 2450000, branch: 'Pusat', method: 'QRIS', mdr: 17150, net: 2432850 },
-  { id: 's2', date: new Date(2026, 5, 2), amount: 1800000, branch: 'Cabang Depok', method: 'Debit', mdr: 10800, net: 1789200 },
-  { id: 's3', date: new Date(2026, 5, 3), amount: 3200000, branch: 'Cabang Bekasi', method: 'Kartu Kredit', mdr: 70400, net: 3129600 },
-  { id: 's4', date: new Date(2026, 5, 3), amount: 950000, branch: 'Pusat', method: 'Transfer', mdr: 0, net: 950000 },
-  { id: 's5', date: new Date(2026, 5, 4), amount: 4100000, branch: 'Cabang Tangerang', method: 'Shopee', mdr: 123000, net: 3977000 },
-  { id: 's6', date: new Date(2026, 5, 5), amount: 1500000, branch: 'Cabang Cibubur', method: 'QRIS', mdr: 10500, net: 1489500 },
-  { id: 's7', date: new Date(2026, 5, 6), amount: 2750000, branch: 'Pusat', method: 'Debit', mdr: 16500, net: 2733500 },
-  { id: 's8', date: new Date(2026, 5, 7), amount: 680000, branch: 'Cabang Depok', method: 'QRIS', mdr: 4760, net: 675240 },
-]
-
-const DEMO_MUTATIONS: DemoMutation[] = [
-  { id: 'm1', date: new Date(2026, 5, 2), amount: 2432850, description: 'Settlement QRIS - BCA', ref: 'REF2026060201' },
-  { id: 'm2', date: new Date(2026, 5, 2), amount: 1789200, description: 'Settlement EDC Debit - BRI', ref: 'REF2026060202' },
-  { id: 'm3', date: new Date(2026, 5, 3), amount: 3125000, description: 'Settlement Kartu Kredit - Mandiri', ref: 'REF2026060301' },
-  { id: 'm4', date: new Date(2026, 5, 3), amount: 950000, description: 'Transfer Masuk - Customer', ref: 'REF2026060302' },
-  { id: 'm5', date: new Date(2026, 5, 4), amount: 3977000, description: 'Transfer Masuk - Tokopedia', ref: 'REF2026060401' },
-  { id: 'm6', date: new Date(2026, 5, 5), amount: 1489500, description: 'Settlement QRIS - Mandiri', ref: 'REF2026060501' },
-  { id: 'm7', date: new Date(2026, 5, 6), amount: 2740000, description: 'Settlement EDC Debit - BCA', ref: 'REF2026060601' },
-  { id: 'm8', date: new Date(2026, 5, 8), amount: 500000, description: 'Transfer Masuk - Unknown', ref: 'REF2026060801' },
-]
-
 interface MatchPair {
   id: string
-  sale: DemoSale
-  mutation: DemoMutation
+  sale: SaleRow
+  mutation: MutationRow
   diff: number
   status: 'proposed' | 'approved'
 }
@@ -102,11 +82,123 @@ interface MatchPair {
 /* ── Page Component ───────────────────────────────────────────────────── */
 
 export default function MatchPage() {
-  const [unmatchedSales, setUnmatchedSales] = useState<DemoSale[]>(DEMO_SALES)
-  const [unmatchedMutations, setUnmatchedMutations] = useState<DemoMutation[]>(DEMO_MUTATIONS)
+  const toast = useToast()
+  const { profile } = useAuth()
+
+  const [unmatchedSales, setUnmatchedSales] = useState<SaleRow[]>([])
+  const [unmatchedMutations, setUnmatchedMutations] = useState<MutationRow[]>([])
   const [matches, setMatches] = useState<MatchPair[]>([])
-  const [selectedSale, setSelectedSale] = useState<string | null>(null)
-  const [selectedMutation, setSelectedMutation] = useState<string | null>(null)
+  
+  const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null)
+  const [selectedMutationId, setSelectedMutationId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const supabaseActive = isSupabaseConfigured
+
+  // Load unmatched transactions
+  const loadData = async () => {
+    setLoading(true)
+    if (supabaseActive) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          // 1. Fetch pending/discrepant reconciliations
+          const { data: dbRecons, error: reconsError } = await supabase
+            .from('reconciliations')
+            .select(`
+              id,
+              sale_date,
+              expected_amount,
+              mdr_amount,
+              expected_settlement,
+              branches (name),
+              payment_methods (name)
+            `)
+            .in('status', ['pending', 'discrepancy'])
+
+          if (reconsError) throw reconsError
+
+          // 2. Fetch unreconciled bank mutations
+          const { data: dbMutations, error: mutationsError } = await supabase
+            .from('bank_mutations')
+            .select('id, mutation_date, amount, description, reference_number')
+            .eq('is_reconciled', false)
+
+          if (mutationsError) throw mutationsError
+
+          // Map recons
+          const mappedSales: SaleRow[] = (dbRecons || []).map((row: any) => ({
+            id: row.id,
+            date: new Date(row.sale_date),
+            amount: parseFloat(row.expected_amount) || 0,
+            branch: row.branches?.name || 'Unknown',
+            method: row.payment_methods?.name || 'Unknown',
+            mdr: parseFloat(row.mdr_amount) || 0,
+            net: parseFloat(row.expected_settlement) || 0
+          }))
+
+          // Map mutations
+          const mappedMutations: MutationRow[] = (dbMutations || []).map((row: any) => ({
+            id: row.id,
+            date: new Date(row.mutation_date),
+            amount: parseFloat(row.amount) || 0,
+            description: row.description || '',
+            ref: row.reference_number || '-'
+          }))
+
+          setUnmatchedSales(mappedSales.sort((a, b) => a.date.getTime() - b.date.getTime()))
+          setUnmatchedMutations(mappedMutations.sort((a, b) => a.date.getTime() - b.date.getTime()))
+        }
+      } catch (e) {
+        console.error('Failed to load match data:', e)
+        toast.error('Gagal memuat data pencocokan dari server.')
+      } finally {
+        setLoading(false)
+      }
+    } else {
+      // Demo Mode
+      try {
+        const localReconsStr = localStorage.getItem('raja-aksesoris-reconciliations') || '[]'
+        const localRecons: any[] = JSON.parse(localReconsStr)
+
+        const localMutsStr = localStorage.getItem('raja-aksesoris-bank-mutations') || '[]'
+        const localMuts: any[] = JSON.parse(localMutsStr)
+
+        // Filter unmatched recons
+        const pendingRecons = localRecons.filter(r => r.status === 'pending' || r.status === 'discrepancy')
+        const mappedSales: SaleRow[] = pendingRecons.map(row => ({
+          id: row.id,
+          date: new Date(row.date),
+          amount: row.expectedAmount,
+          branch: row.branchName,
+          method: row.paymentMethodName,
+          mdr: row.mdrAmount,
+          net: row.expectedSettlement
+        }))
+
+        // Filter unmatched mutations
+        const pendingMuts = localMuts.filter(m => !m.reconciled)
+        const mappedMutations: MutationRow[] = pendingMuts.map(row => ({
+          id: row.id,
+          date: new Date(row.tanggal),
+          amount: row.jumlah,
+          description: row.keterangan,
+          ref: row.noRef
+        }))
+
+        setUnmatchedSales(mappedSales.sort((a, b) => a.date.getTime() - b.date.getTime()))
+        setUnmatchedMutations(mappedMutations.sort((a, b) => a.date.getTime() - b.date.getTime()))
+      } catch (err) {
+        console.error('Error loading demo match data:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  useEffect(() => {
+    loadData()
+  }, [])
 
   /* ── Stats ──────────────────────────────────────────────────────── */
   const stats = useMemo(() => ({
@@ -128,7 +220,7 @@ export default function MatchPage() {
 
       for (let mi = remainingMutations.length - 1; mi >= 0; mi--) {
         const mutation = remainingMutations[mi]
-        const tolerance = sale.net * 0.01
+        const tolerance = sale.net * 0.01 // 1% tolerance
         const diff = Math.abs(sale.net - mutation.amount)
 
         if (diff <= tolerance) {
@@ -148,25 +240,25 @@ export default function MatchPage() {
     }
 
     if (newMatches.length === 0) {
-      alert('Tidak ditemukan kecocokan otomatis dalam toleransi 1%')
+      toast.warning('Tidak ditemukan kecocokan otomatis dalam toleransi 1%')
       return
     }
 
     setUnmatchedSales(remainingSales)
     setUnmatchedMutations(remainingMutations)
     setMatches((prev) => [...prev, ...newMatches])
-    setSelectedSale(null)
-    setSelectedMutation(null)
+    setSelectedSaleId(null)
+    setSelectedMutationId(null)
 
-    console.log(`✅ Auto-match menemukan ${newMatches.length} kecocokan`)
+    toast.success(`Menemukan ${newMatches.length} pasangan kecocokan otomatis!`)
   }, [unmatchedSales, unmatchedMutations, matches.length])
 
   /* ── Manual Match ───────────────────────────────────────────────── */
   const handleManualMatch = useCallback(() => {
-    if (!selectedSale || !selectedMutation) return
+    if (!selectedSaleId || !selectedMutationId) return
 
-    const sale = unmatchedSales.find((s) => s.id === selectedSale)
-    const mutation = unmatchedMutations.find((m) => m.id === selectedMutation)
+    const sale = unmatchedSales.find((s) => s.id === selectedSaleId)
+    const mutation = unmatchedMutations.find((m) => m.id === selectedMutationId)
 
     if (!sale || !mutation) return
 
@@ -179,27 +271,120 @@ export default function MatchPage() {
     }
 
     setMatches((prev) => [...prev, newMatch])
-    setUnmatchedSales((prev) => prev.filter((s) => s.id !== selectedSale))
-    setUnmatchedMutations((prev) => prev.filter((m) => m.id !== selectedMutation))
-    setSelectedSale(null)
-    setSelectedMutation(null)
+    setUnmatchedSales((prev) => prev.filter((s) => s.id !== selectedSaleId))
+    setUnmatchedMutations((prev) => prev.filter((m) => m.id !== selectedMutationId))
+    setSelectedSaleId(null)
+    setSelectedMutationId(null)
 
-    console.log('✅ Manual match dibuat:', newMatch)
-  }, [selectedSale, selectedMutation, unmatchedSales, unmatchedMutations])
+    toast.success('Pencocokan manual berhasil dipasangkan.')
+  }, [selectedSaleId, selectedMutationId, unmatchedSales, unmatchedMutations])
 
-  /* ── Approve / Reject ───────────────────────────────────────────── */
-  const handleApprove = useCallback((matchId: string) => {
-    setMatches((prev) =>
-      prev.map((m) => (m.id === matchId ? { ...m, status: 'approved' } : m))
-    )
-  }, [])
+  /* ── Approve Match (Persist) ────────────────────────────────────── */
+  const handleApprove = async (matchId: string) => {
+    const match = matches.find((m) => m.id === matchId)
+    if (!match) return
 
+    const { sale, mutation } = match
+    const isExact = match.diff === 0
+    const finalStatus = isExact ? 'matched' : 'discrepancy'
+
+    if (supabaseActive) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          // 1. Update reconciliations table
+          const { error: reconError } = await supabase
+            .from('reconciliations')
+            .update({
+              status: finalStatus,
+              actual_amount: mutation.amount,
+              bank_mutation_id: mutation.id,
+              settlement_date: mutation.date.toISOString().split('T')[0],
+              discrepancy_amount: match.diff,
+              reconciled_by: profile?.id
+            })
+            .eq('id', sale.id)
+
+          if (reconError) throw reconError
+
+          // 2. Update bank_mutations table
+          const { error: mutationError } = await supabase
+            .from('bank_mutations')
+            .update({
+              is_reconciled: true
+            })
+            .eq('id', mutation.id)
+
+          if (mutationError) throw mutationError
+
+          toast.success('Pencocokan transaksi berhasil disimpan ke server.')
+          
+          // Update local state to approved
+          setMatches((prev) =>
+            prev.map((m) => (m.id === matchId ? { ...m, status: 'approved' } : m))
+          )
+        }
+      } catch (err) {
+        console.error('Failed to save match:', err)
+        toast.error('Gagal menyimpan pencocokan ke server.')
+      }
+    } else {
+      // Demo Mode
+      try {
+        const localReconsStr = localStorage.getItem('raja-aksesoris-reconciliations') || '[]'
+        const localRecons: any[] = JSON.parse(localReconsStr)
+
+        const localMutsStr = localStorage.getItem('raja-aksesoris-bank-mutations') || '[]'
+        const localMuts: any[] = JSON.parse(localMutsStr)
+
+        // Update reconciliation status
+        const updatedRecons = localRecons.map(r => {
+          if (r.id === sale.id) {
+            return {
+              ...r,
+              status: finalStatus,
+              actualAmount: mutation.amount,
+              bankMutationId: mutation.id,
+              discrepancyAmount: match.diff,
+            }
+          }
+          return r
+        })
+
+        // Update mutation status
+        const updatedMuts = localMuts.map(m => {
+          if (m.id === mutation.id) {
+            return {
+              ...m,
+              reconciled: true
+            }
+          }
+          return m
+        })
+
+        localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(updatedRecons))
+        localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify(updatedMuts))
+
+        toast.success('Pencocokan transaksi disimpan secara lokal.')
+        
+        // Update local state to approved
+        setMatches((prev) =>
+          prev.map((m) => (m.id === matchId ? { ...m, status: 'approved' } : m))
+        )
+      } catch (err) {
+        console.error('Failed to save match locally:', err)
+        toast.error('Gagal menyimpan pencocokan secara lokal.')
+      }
+    }
+  }
+
+  /* ── Reject Match Proposal (Remove from table, return to lists) ── */
   const handleReject = useCallback((matchId: string) => {
     const match = matches.find((m) => m.id === matchId)
     if (!match) return
 
-    setUnmatchedSales((prev) => [...prev, match.sale])
-    setUnmatchedMutations((prev) => [...prev, match.mutation])
+    setUnmatchedSales((prev) => [...prev, match.sale].sort((a, b) => a.date.getTime() - b.date.getTime()))
+    setUnmatchedMutations((prev) => [...prev, match.mutation].sort((a, b) => a.date.getTime() - b.date.getTime()))
     setMatches((prev) => prev.filter((m) => m.id !== matchId))
   }, [matches])
 
@@ -224,7 +409,7 @@ export default function MatchPage() {
           </p>
         </div>
         <div className="btn-group">
-          {selectedSale && selectedMutation && (
+          {selectedSaleId && selectedMutationId && (
             <button
               type="button"
               className="btn btn-secondary"
@@ -267,20 +452,20 @@ export default function MatchPage() {
       </div>
 
       {/* ── Selection hint ───────────────────────────────────────────── */}
-      {(selectedSale || selectedMutation) && (
+      {(selectedSaleId || selectedMutationId) && (
         <div className="card mb-4 animate-scale-in" style={{ borderColor: 'var(--color-primary)', borderWidth: '2px' }}>
           <div className="card-body">
             <div className="flex items-center gap-3 flex-wrap">
               <IconLink />
               <span className="text-sm font-medium">
-                {selectedSale && !selectedMutation && 'Pilih satu mutasi bank di sisi kanan untuk membuat pasangan'}
-                {!selectedSale && selectedMutation && 'Pilih satu data penjualan di sisi kiri untuk membuat pasangan'}
-                {selectedSale && selectedMutation && 'Klik "Pasangkan Manual" untuk mencocokkan kedua item ini'}
+                {selectedSaleId && !selectedMutationId && 'Pilih satu mutasi bank di sisi kanan untuk membuat pasangan'}
+                {!selectedSaleId && selectedMutationId && 'Pilih satu data penjualan di sisi kiri untuk membuat pasangan'}
+                {selectedSaleId && selectedMutationId && 'Klik "Pasangkan Manual" untuk mencocokkan kedua item ini'}
               </span>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm ml-auto"
-                onClick={() => { setSelectedSale(null); setSelectedMutation(null) }}
+                onClick={() => { setSelectedSaleId(null); setSelectedMutationId(null) }}
               >
                 Batal
               </button>
@@ -289,212 +474,223 @@ export default function MatchPage() {
         </div>
       )}
 
-      {/* ── Split View ───────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 animate-slide-up delay-2">
-        {/* Left: Unmatched Sales */}
+      {loading ? (
         <div className="card">
-          <div className="card-header">
-            <h3 style={{ fontSize: 'var(--text-base)' }}>
-              Penjualan Belum Cocok
-              <span className="badge badge-count" style={{ marginLeft: 'var(--space-2)' }}>
-                {unmatchedSales.length}
-              </span>
-            </h3>
+          <div className="card-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 'var(--space-12)' }}>
+            <span className="spinner spinner-lg" />
+            <p style={{ marginTop: 'var(--space-4)', color: 'var(--color-text-secondary)' }}>Memuat data transaksi...</p>
           </div>
-          <div style={{ maxHeight: '480px', overflowY: 'auto' }}>
-            {unmatchedSales.length === 0 ? (
-              <div className="empty-state" style={{ padding: 'var(--space-8) var(--space-4)' }}>
-                <p className="text-sm text-secondary">Semua penjualan sudah dicocokkan</p>
-              </div>
-            ) : (
-              unmatchedSales.map((sale) => (
-                <button
-                  key={sale.id}
-                  type="button"
-                  className="w-full"
-                  onClick={() => setSelectedSale(selectedSale === sale.id ? null : sale.id)}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 'var(--space-1)',
-                    padding: 'var(--space-3) var(--space-4)',
-                    borderBottom: '1px solid var(--color-border-light)',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'all 150ms ease',
-                    backgroundColor: selectedSale === sale.id ? 'var(--color-primary-light)' : 'transparent',
-                    borderLeft: selectedSale === sale.id ? '3px solid var(--color-primary)' : '3px solid transparent',
-                    minHeight: '44px',
-                  }}
-                  aria-pressed={selectedSale === sale.id}
-                  aria-label={`Pilih penjualan ${sale.branch} ${formatCurrency(sale.net)}`}
-                >
-                  <div className="flex items-center justify-between w-full">
-                    <span className="font-semibold text-sm">{formatCurrency(sale.net)}</span>
-                    <span className="text-xs text-tertiary">{formatDate(sale.date)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-secondary">{sale.branch}</span>
-                    <span className="text-xs text-tertiary">•</span>
-                    <span className="text-xs text-secondary">{sale.method}</span>
-                  </div>
-                  <span className="text-xs text-tertiary">
-                    Omset: {formatCurrency(sale.amount)} | MDR: {formatCurrency(sale.mdr)}
+        </div>
+      ) : (
+        <>
+          {/* ── Split View ───────────────────────────────────────────────── */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 animate-slide-up delay-2">
+            {/* Left: Unmatched Sales */}
+            <div className="card">
+              <div className="card-header">
+                <h3 style={{ fontSize: 'var(--text-base)' }}>
+                  Penjualan Belum Cocok (Daily Sales)
+                  <span className="badge badge-count" style={{ marginLeft: 'var(--space-2)' }}>
+                    {unmatchedSales.length}
                   </span>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Right: Unmatched Mutations */}
-        <div className="card">
-          <div className="card-header">
-            <h3 style={{ fontSize: 'var(--text-base)' }}>
-              Mutasi Bank Belum Cocok
-              <span className="badge badge-count" style={{ marginLeft: 'var(--space-2)' }}>
-                {unmatchedMutations.length}
-              </span>
-            </h3>
-          </div>
-          <div style={{ maxHeight: '480px', overflowY: 'auto' }}>
-            {unmatchedMutations.length === 0 ? (
-              <div className="empty-state" style={{ padding: 'var(--space-8) var(--space-4)' }}>
-                <p className="text-sm text-secondary">Semua mutasi sudah dicocokkan</p>
+                </h3>
               </div>
-            ) : (
-              unmatchedMutations.map((mutation) => (
-                <button
-                  key={mutation.id}
-                  type="button"
-                  className="w-full"
-                  onClick={() => setSelectedMutation(selectedMutation === mutation.id ? null : mutation.id)}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 'var(--space-1)',
-                    padding: 'var(--space-3) var(--space-4)',
-                    borderBottom: '1px solid var(--color-border-light)',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'all 150ms ease',
-                    backgroundColor: selectedMutation === mutation.id ? 'var(--color-primary-light)' : 'transparent',
-                    borderLeft: selectedMutation === mutation.id ? '3px solid var(--color-primary)' : '3px solid transparent',
-                    minHeight: '44px',
-                  }}
-                  aria-pressed={selectedMutation === mutation.id}
-                  aria-label={`Pilih mutasi ${mutation.description} ${formatCurrency(mutation.amount)}`}
-                >
-                  <div className="flex items-center justify-between w-full">
-                    <span className="font-semibold text-sm">{formatCurrency(mutation.amount)}</span>
-                    <span className="text-xs text-tertiary">{formatDate(mutation.date)}</span>
+              <div style={{ maxHeight: '480px', overflowY: 'auto' }}>
+                {unmatchedSales.length === 0 ? (
+                  <div className="empty-state" style={{ padding: 'var(--space-8) var(--space-4)' }}>
+                    <p className="text-sm text-secondary">Semua penjualan sudah dicocokkan</p>
                   </div>
-                  <span className="text-xs text-secondary">{mutation.description}</span>
-                  <span className="text-xs text-tertiary">Ref: {mutation.ref}</span>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
+                ) : (
+                  unmatchedSales.map((sale) => (
+                    <button
+                      key={sale.id}
+                      type="button"
+                      className="w-full"
+                      onClick={() => setSelectedSaleId(selectedSaleId === sale.id ? null : sale.id)}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 'var(--space-1)',
+                        padding: 'var(--space-3) var(--space-4)',
+                        borderBottom: '1px solid var(--color-border-light)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        transition: 'all 150ms ease',
+                        backgroundColor: selectedSaleId === sale.id ? 'var(--color-primary-light)' : 'transparent',
+                        borderLeft: selectedSaleId === sale.id ? '3px solid var(--color-primary)' : '3px solid transparent',
+                        minHeight: '44px',
+                      }}
+                      aria-pressed={selectedSaleId === sale.id}
+                      aria-label={`Pilih penjualan ${sale.branch} ${formatCurrency(sale.net)}`}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className="font-semibold text-sm">{formatCurrency(sale.net)}</span>
+                        <span className="text-xs text-tertiary">{formatDate(sale.date)}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-secondary">{sale.branch}</span>
+                        <span className="text-xs text-tertiary">•</span>
+                        <span className="text-xs text-secondary">{sale.method}</span>
+                      </div>
+                      <span className="text-xs text-tertiary">
+                        Omset: {formatCurrency(sale.amount)} | MDR: {formatCurrency(sale.mdr)}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
 
-      {/* ── Matched Pairs ────────────────────────────────────────────── */}
-      {matches.length > 0 && (
-        <div className="animate-slide-up delay-3">
-          <div className="card">
-            <div className="card-header">
-              <h3>Hasil Pencocokan</h3>
-            </div>
-            <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Penjualan</th>
-                    <th>Net Amount</th>
-                    <th style={{ textAlign: 'center' }}>Selisih</th>
-                    <th>Mutasi Bank</th>
-                    <th>Amount</th>
-                    <th>Status</th>
-                    <th style={{ textAlign: 'center' }}>Aksi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {matches.map((match) => (
-                    <tr key={match.id} style={{
-                      backgroundColor: match.status === 'approved'
-                        ? 'var(--color-success-light)'
-                        : undefined,
-                    }}>
-                      <td>
-                        <div className="flex flex-col">
-                          <span className="text-sm font-medium">{match.sale.branch}</span>
-                          <span className="text-xs text-tertiary">{formatDate(match.sale.date)} • {match.sale.method}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <span className="font-semibold">{formatCurrency(match.sale.net)}</span>
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        {match.diff === 0 ? (
-                          <Badge variant="success">Exact</Badge>
-                        ) : (
-                          <span className="text-xs font-semibold" style={{ color: Math.abs(match.diff) < match.sale.net * 0.005 ? 'var(--color-warning)' : 'var(--color-danger)' }}>
-                            {formatCurrency(match.diff)}
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        <div className="flex flex-col">
-                          <span className="text-sm font-medium">{match.mutation.description}</span>
-                          <span className="text-xs text-tertiary">{formatDate(match.mutation.date)} • {match.mutation.ref}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <span className="font-semibold">{formatCurrency(match.mutation.amount)}</span>
-                      </td>
-                      <td>
-                        <Badge variant={match.status === 'approved' ? 'success' : 'warning'}>
-                          {match.status === 'approved' ? 'Disetujui' : 'Menunggu'}
-                        </Badge>
-                      </td>
-                      <td>
-                        <div className="flex items-center justify-center gap-2">
-                          {match.status !== 'approved' && (
-                            <button
-                              type="button"
-                              className="btn btn-sm"
-                              style={{
-                                backgroundColor: 'var(--color-success)',
-                                color: '#fff',
-                                padding: '4px 10px',
-                                minHeight: '32px',
-                              }}
-                              onClick={() => handleApprove(match.id)}
-                              aria-label="Setujui pasangan"
-                              title="Setujui"
-                            >
-                              <IconCheck />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-danger"
-                            style={{ padding: '4px 10px', minHeight: '32px' }}
-                            onClick={() => handleReject(match.id)}
-                            aria-label="Tolak pasangan"
-                            title="Batalkan"
-                          >
-                            <IconX />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {/* Right: Unmatched Mutations */}
+            <div className="card">
+              <div className="card-header">
+                <h3 style={{ fontSize: 'var(--text-base)' }}>
+                  Mutasi Bank Belum Cocok
+                  <span className="badge badge-count" style={{ marginLeft: 'var(--space-2)' }}>
+                    {unmatchedMutations.length}
+                  </span>
+                </h3>
+              </div>
+              <div style={{ maxHeight: '480px', overflowY: 'auto' }}>
+                {unmatchedMutations.length === 0 ? (
+                  <div className="empty-state" style={{ padding: 'var(--space-8) var(--space-4)' }}>
+                    <p className="text-sm text-secondary">Semua mutasi sudah dicocokkan</p>
+                  </div>
+                ) : (
+                  unmatchedMutations.map((mutation) => (
+                    <button
+                      key={mutation.id}
+                      type="button"
+                      className="w-full"
+                      onClick={() => setSelectedMutationId(selectedMutationId === mutation.id ? null : mutation.id)}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 'var(--space-1)',
+                        padding: 'var(--space-3) var(--space-4)',
+                        borderBottom: '1px solid var(--color-border-light)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        transition: 'all 150ms ease',
+                        backgroundColor: selectedMutationId === mutation.id ? 'var(--color-primary-light)' : 'transparent',
+                        borderLeft: selectedMutationId === mutation.id ? '3px solid var(--color-primary)' : '3px solid transparent',
+                        minHeight: '44px',
+                      }}
+                      aria-pressed={selectedMutationId === mutation.id}
+                      aria-label={`Pilih mutasi ${mutation.description} ${formatCurrency(mutation.amount)}`}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className="font-semibold text-sm">{formatCurrency(mutation.amount)}</span>
+                        <span className="text-xs text-tertiary">{formatDate(mutation.date)}</span>
+                      </div>
+                      <span className="text-xs text-secondary">{mutation.description}</span>
+                      <span className="text-xs text-tertiary">Ref: {mutation.ref}</span>
+                    </button>
+                  ))
+                )}
+              </div>
             </div>
           </div>
-        </div>
+
+          {/* ── Matched Pairs ────────────────────────────────────────────── */}
+          {matches.length > 0 && (
+            <div className="animate-slide-up delay-3">
+              <div className="card">
+                <div className="card-header">
+                  <h3>Hasil Pencocokan (Konfirmasi Rekonsiliasi)</h3>
+                </div>
+                <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Penjualan</th>
+                        <th>Net Expected</th>
+                        <th style={{ textAlign: 'center' }}>Selisih</th>
+                        <th>Mutasi Bank</th>
+                        <th>Nominal Mutasi</th>
+                        <th>Status</th>
+                        <th style={{ textAlign: 'center' }}>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {matches.map((match) => (
+                        <tr key={match.id} style={{
+                          backgroundColor: match.status === 'approved'
+                            ? 'var(--color-success-light)'
+                            : undefined,
+                        }}>
+                          <td>
+                            <div className="flex flex-col">
+                              <span className="text-sm font-medium">{match.sale.branch}</span>
+                              <span className="text-xs text-tertiary">{formatDate(match.sale.date)} • {match.sale.method}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="font-semibold">{formatCurrency(match.sale.net)}</span>
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            {match.diff === 0 ? (
+                              <Badge variant="success">Exact</Badge>
+                            ) : (
+                              <span className="text-xs font-semibold" style={{ color: Math.abs(match.diff) < match.sale.net * 0.005 ? 'var(--color-warning)' : 'var(--color-danger)' }}>
+                                {formatCurrency(match.diff)}
+                              </span>
+                            )}
+                          </td>
+                          <td>
+                            <div className="flex flex-col">
+                              <span className="text-sm font-medium">{match.mutation.description}</span>
+                              <span className="text-xs text-tertiary">{formatDate(match.mutation.date)} • {match.mutation.ref}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="font-semibold">{formatCurrency(match.mutation.amount)}</span>
+                          </td>
+                          <td>
+                            <Badge variant={match.status === 'approved' ? 'success' : 'warning'}>
+                              {match.status === 'approved' ? 'Disetujui' : 'Menunggu Persetujuan'}
+                            </Badge>
+                          </td>
+                          <td>
+                            <div className="flex items-center justify-center gap-2">
+                              {match.status !== 'approved' && (
+                                <button
+                                  type="button"
+                                  className="btn btn-sm"
+                                  style={{
+                                    backgroundColor: 'var(--color-success)',
+                                    color: '#fff',
+                                    padding: '4px 10px',
+                                    minHeight: '32px',
+                                  }}
+                                  onClick={() => handleApprove(match.id)}
+                                  aria-label="Setujui pasangan"
+                                  title="Setujui & Simpan"
+                                >
+                                  <IconCheck />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-danger"
+                                style={{ padding: '4px 10px', minHeight: '32px' }}
+                                onClick={() => handleReject(match.id)}
+                                aria-label="Tolak pasangan"
+                                title="Batalkan"
+                              >
+                                <IconX />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

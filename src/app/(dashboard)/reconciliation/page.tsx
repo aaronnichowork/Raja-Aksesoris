@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { StatCard, Badge, Table, DatePicker } from '@/components/ui'
 import { isSupabaseConfigured, createClient } from '@/lib/supabase/client'
+import { useAuth } from '@/hooks/useAuth'
+import { useBranch } from '@/hooks/useBranch'
 import type { TableColumn } from '@/components/ui/Table'
 
 /* ── SVG Icons ─────────────────────────────────────────────────────────── */
@@ -50,12 +52,12 @@ function IconDelta() {
 
 /* ── Demo Data ─────────────────────────────────────────────────────────── */
 
-const BRANCHES = [
-  'Pusat - Jl. Raya Bogor',
-  'Cabang Depok',
-  'Cabang Bekasi',
-  'Cabang Tangerang',
-  'Cabang Cibubur',
+const DEMO_BRANCH_NAMES = [
+  'Mojokerto',
+  'Jombang',
+  'Kediri',
+  'Mojoagung',
+  'Tulungagung',
 ]
 
 const PAYMENT_METHODS = ['Cash', 'Transfer Bank', 'QRIS', 'Debit', 'Kartu Kredit', 'Shopee', 'TikTok']
@@ -72,13 +74,15 @@ interface DemoDataRow {
   status: 'matched' | 'pending' | 'discrepancy'
 }
 
-function generateDemoData(month: number, year: number): DemoDataRow[] {
+function generateDemoData(month: number, year: number, branchNames: string[]): DemoDataRow[] {
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const rows: DemoDataRow[] = []
   let id = 1
 
+  const branchesToUse = branchNames.length > 0 ? branchNames : DEMO_BRANCH_NAMES
+
   for (let day = 1; day <= Math.min(daysInMonth, 15); day++) {
-    const branch = BRANCHES[day % BRANCHES.length]
+    const branch = branchesToUse[day % branchesToUse.length]
     const method = PAYMENT_METHODS[day % PAYMENT_METHODS.length]
     const omset = Math.round((500000 + Math.random() * 5000000) / 1000) * 1000
     const mdrRate = method === 'Cash' ? 0 : method === 'Transfer Bank' ? 0 : method === 'QRIS' ? 0.7 : method === 'Debit' ? 0.6 : method === 'Kartu Kredit' ? 2.2 : 3
@@ -133,6 +137,9 @@ interface MappedReconRow extends Record<string, any> {
 }
 
 export default function ReconciliationPage() {
+  const { profile } = useAuth()
+  const { branches } = useBranch(profile)
+
   const now = new Date()
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth())
   const [selectedYear, setSelectedYear] = useState(now.getFullYear())
@@ -143,7 +150,7 @@ export default function ReconciliationPage() {
 
   useEffect(() => {
     loadData()
-  }, [selectedMonth, selectedYear])
+  }, [selectedMonth, selectedYear, branches])
 
   const loadData = async () => {
     setLoading(true)
@@ -193,60 +200,69 @@ export default function ReconciliationPage() {
     } else {
       // Demo Mode: read from localStorage
       let localRecons = localStorage.getItem('raja-aksesoris-reconciliations')
-      if (!localRecons) {
-        // Pre-fill local storage with 3 months of mock data if empty
-        const initialRecons: any[] = []
-        const today = new Date()
-        for (let mOffset = -2; mOffset <= 0; mOffset++) {
-          const targetMonth = new Date(today.getFullYear(), today.getMonth() + mOffset, 1)
-          const m = targetMonth.getMonth()
-          const y = targetMonth.getFullYear()
-          const generated = generateDemoData(m, y)
-          generated.forEach(item => {
-            const dateStr = item.tanggal.toISOString().split('T')[0]
-            initialRecons.push({
-              id: `recon-demo-${m}-${item.id}`,
-              branchId: item.cabang.includes('Depok') ? 'cab-2' : item.cabang.includes('Bekasi') ? 'cab-3' : 'cab-1',
-              branchName: item.cabang,
-              date: dateStr,
-              paymentMethodId: item.metode === 'Cash' ? 'pay-1' : 'pay-3',
-              paymentMethodName: item.metode,
-              expectedAmount: item.omset,
-              mdrAmount: item.mdr,
-              expectedSettlement: item.expected,
-              actualAmount: item.actual,
-              status: item.status,
-              notes: 'Data demo otomatis'
+      
+      // Wait for branches to load before generating demo data
+      if (branches.length > 0) {
+        if (!localRecons) {
+          // Pre-fill local storage with 3 months of mock data if empty
+          const initialRecons: any[] = []
+          const today = new Date()
+          const branchNames = branches.map(b => b.name)
+          for (let mOffset = -2; mOffset <= 0; mOffset++) {
+            const targetMonth = new Date(today.getFullYear(), today.getMonth() + mOffset, 1)
+            const m = targetMonth.getMonth()
+            const y = targetMonth.getFullYear()
+            const generated = generateDemoData(m, y, branchNames)
+            generated.forEach(item => {
+              const dateStr = item.tanggal.toISOString().split('T')[0]
+              const branchObj = branches.find(b => b.name === item.cabang)
+              const branchId = branchObj?.id || 'b1'
+              initialRecons.push({
+                id: `recon-demo-${m}-${item.id}`,
+                branchId: branchId,
+                branchName: item.cabang,
+                date: dateStr,
+                paymentMethodId: item.metode === 'Cash' ? 'pay-1' : 'pay-3',
+                paymentMethodName: item.metode,
+                expectedAmount: item.omset,
+                mdrAmount: item.mdr,
+                expectedSettlement: item.expected,
+                actualAmount: item.actual,
+                status: item.status,
+                notes: 'Data demo otomatis'
+              })
             })
-          })
+          }
+          localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(initialRecons))
+          localRecons = JSON.stringify(initialRecons)
         }
-        localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(initialRecons))
-        localRecons = JSON.stringify(initialRecons)
-      }
 
-      try {
-        const parsed = JSON.parse(localRecons) as any[]
-        const filtered = parsed.filter(item => {
-          const itemDate = new Date(item.date)
-          return itemDate.getMonth() === selectedMonth && itemDate.getFullYear() === selectedYear
-        })
+        try {
+          const parsed = JSON.parse(localRecons || '[]') as any[]
+          const filtered = parsed.filter(item => {
+            const itemDate = new Date(item.date)
+            return itemDate.getMonth() === selectedMonth && itemDate.getFullYear() === selectedYear
+          })
 
-        const mapped: MappedReconRow[] = filtered.map(row => ({
-          id: row.id,
-          tanggal: new Date(row.date),
-          cabang: row.branchName,
-          metode: row.paymentMethodName,
-          omset: row.expectedAmount,
-          mdr: row.mdrAmount,
-          expected: row.expectedSettlement,
-          actual: row.actualAmount,
-          status: row.status
-        }))
+          const mapped: MappedReconRow[] = filtered.map(row => ({
+            id: row.id,
+            tanggal: new Date(row.date),
+            cabang: row.branchName,
+            metode: row.paymentMethodName,
+            omset: row.expectedAmount,
+            mdr: row.mdrAmount,
+            expected: row.expectedSettlement,
+            actual: row.actualAmount,
+            status: row.status
+          }))
 
-        setData(mapped.sort((a, b) => b.tanggal.getTime() - a.tanggal.getTime()))
-      } catch (err) {
-        console.error('Failed to parse recons:', err)
-      } finally {
+          setData(mapped.sort((a, b) => b.tanggal.getTime() - a.tanggal.getTime()))
+        } catch (err) {
+          console.error('Failed to parse recons:', err)
+        } finally {
+          setLoading(false)
+        }
+      } else {
         setLoading(false)
       }
     }
@@ -325,11 +341,7 @@ export default function ReconciliationPage() {
         />
 
         <div className="btn-group">
-          <Link href="/reconciliation/input" className="btn btn-primary">
-            <IconWallet />
-            Input Omset
-          </Link>
-          <Link href="/reconciliation/mutations" className="btn btn-secondary">
+          <Link href="/reconciliation/mutations" className="btn btn-primary">
             <IconBank />
             Input Mutasi Bank
           </Link>
