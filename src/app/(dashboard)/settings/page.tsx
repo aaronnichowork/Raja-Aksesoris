@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
+import { isSupabaseConfigured, createClient } from '@/lib/supabase/client'
 
 // ===========================================================================
 // Local Types for Settings Page
@@ -32,7 +33,7 @@ interface SettingsUser {
 }
 
 interface SettingsPnlCategory {
-  id: number
+  id: number | string
   name: string
   type: string
   autoManual: string
@@ -684,10 +685,65 @@ function UsersTab() {
 // Tab: Kategori P&L
 // ===========================================================================
 function PnlCategoriesTab() {
-  const [categories, setCategories] = useState<SettingsPnlCategory[]>(INITIAL_PNL_CATEGORIES)
+  const [categories, setCategories] = useState<SettingsPnlCategory[]>([])
   const [search, setSearch] = useState('')
   const [modal, setModal] = useState<ModalState | null>(null)
   const [form, setForm] = useState<PnlCategoryForm>({ name: '', type: 'Revenue', autoManual: 'manual', source: '' })
+  const [loading, setLoading] = useState(true)
+
+  const supabaseActive = isSupabaseConfigured
+
+  const loadCategories = async () => {
+    setLoading(true)
+    if (supabaseActive) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          const { data, error } = await supabase
+            .from('pnl_categories')
+            .select('*')
+            .order('name')
+          
+          if (error) throw error
+
+          const mapped: SettingsPnlCategory[] = (data || []).map((row: any) => ({
+            id: row.id,
+            name: row.name,
+            type: row.type === 'revenue' ? 'Revenue'
+                  : row.type === 'cogs' ? 'COGS'
+                  : row.type === 'operating_expense' ? 'Operating Expense'
+                  : row.type === 'other_income' ? 'Other Revenue'
+                  : 'Other Expense',
+            autoManual: row.is_auto ? 'auto' : 'manual',
+            source: row.source_module || '—'
+          }))
+          setCategories(mapped)
+        }
+      } catch (err) {
+        console.error('Failed to load P&L categories from Supabase:', err)
+      } finally {
+        setLoading(false)
+      }
+    } else {
+      // Demo Mode
+      try {
+        let localCats = localStorage.getItem('raja-aksesoris-pnl-categories')
+        if (!localCats) {
+          localStorage.setItem('raja-aksesoris-pnl-categories', JSON.stringify(INITIAL_PNL_CATEGORIES))
+          localCats = JSON.stringify(INITIAL_PNL_CATEGORIES)
+        }
+        setCategories(JSON.parse(localCats))
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  useEffect(() => {
+    loadCategories()
+  }, [])
 
   const filtered = useMemo(
     () => categories.filter((c: SettingsPnlCategory) => c.name.toLowerCase().includes(search.toLowerCase())),
@@ -704,27 +760,97 @@ function PnlCategoriesTab() {
     setModal({ mode: 'edit', data: cat as unknown as Record<string, unknown> })
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!modal) return
-    const entry = {
-      name: form.name,
-      type: form.type,
-      autoManual: form.autoManual,
-      source: form.autoManual === 'auto' ? form.source : '—',
-    }
-    if (modal.mode === 'add') {
-      setCategories((prev: SettingsPnlCategory[]) => [...prev, { id: Date.now(), ...entry }])
+
+    const dbType = form.type === 'Revenue' ? 'revenue'
+                 : form.type === 'COGS' ? 'cogs'
+                 : form.type === 'Operating Expense' ? 'operating_expense'
+                 : form.type === 'Other Revenue' ? 'other_income'
+                 : 'other_expense'
+    const isAuto = form.autoManual === 'auto'
+    const sourceModule = isAuto ? form.source : null
+
+    if (supabaseActive) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          if (modal.mode === 'add') {
+            const { error } = await supabase
+              .from('pnl_categories')
+              .insert({
+                name: form.name,
+                type: dbType,
+                is_auto: isAuto,
+                source_module: sourceModule
+              })
+            if (error) throw error
+          } else {
+            const editId = (modal.data as unknown as SettingsPnlCategory)?.id
+            const { error } = await supabase
+              .from('pnl_categories')
+              .update({
+                name: form.name,
+                type: dbType,
+                is_auto: isAuto,
+                source_module: sourceModule
+              })
+              .eq('id', editId)
+            if (error) throw error
+          }
+        }
+      } catch (err) {
+        console.error('Failed to save P&L category:', err)
+        alert('Gagal menyimpan kategori P&L.')
+        return
+      }
     } else {
-      const editId = (modal.data as unknown as SettingsPnlCategory)?.id
-      setCategories((prev: SettingsPnlCategory[]) => prev.map((c: SettingsPnlCategory) => c.id === editId ? { ...c, ...entry } : c))
+      // Demo Mode
+      const entry = {
+        name: form.name,
+        type: form.type,
+        autoManual: form.autoManual,
+        source: form.autoManual === 'auto' ? form.source : '—',
+      }
+      let updated: SettingsPnlCategory[] = []
+      if (modal.mode === 'add') {
+        updated = [...categories, { id: `cat-pnl-${Date.now()}`, ...entry }]
+      } else {
+        const editId = (modal.data as unknown as SettingsPnlCategory)?.id
+        updated = categories.map((c: SettingsPnlCategory) => c.id === editId ? { ...c, ...entry } : c)
+      }
+      localStorage.setItem('raja-aksesoris-pnl-categories', JSON.stringify(updated))
     }
+
     setModal(null)
+    loadCategories()
   }
 
-  const handleDelete = (id: number) => {
-    if (confirm('Hapus kategori ini?')) {
-      setCategories((prev: SettingsPnlCategory[]) => prev.filter((c: SettingsPnlCategory) => c.id !== id))
+  const handleDelete = async (id: number | string) => {
+    if (!confirm('Hapus kategori ini?')) return
+
+    if (supabaseActive) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          const { error } = await supabase
+            .from('pnl_categories')
+            .delete()
+            .eq('id', id)
+          if (error) throw error
+        }
+      } catch (err) {
+        console.error('Failed to delete P&L category:', err)
+        alert('Gagal menghapus kategori P&L. Kemungkinan kategori ini masih dirujuk oleh data lain.')
+        return
+      }
+    } else {
+      // Demo Mode
+      const updated = categories.filter((c: SettingsPnlCategory) => c.id !== id)
+      localStorage.setItem('raja-aksesoris-pnl-categories', JSON.stringify(updated))
     }
+
+    loadCategories()
   }
 
   return (
@@ -739,38 +865,44 @@ function PnlCategoriesTab() {
         </button>
       </div>
 
-      <div className="table-container table-mobile-cards">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Nama Kategori</th>
-              <th>Tipe</th>
-              <th>Auto/Manual</th>
-              <th>Sumber</th>
-              <th style={{ textAlign: 'right' }}>Aksi</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((c: SettingsPnlCategory) => (
-              <tr key={c.id}>
-                <td><span className="table-responsive-label">Nama: </span><span className="font-semibold">{c.name}</span></td>
-                <td><span className="table-responsive-label">Tipe: </span><TypeBadge type={c.type} /></td>
-                <td><span className="table-responsive-label">Mode: </span><AutoManualBadge value={c.autoManual} /></td>
-                <td><span className="table-responsive-label">Sumber: </span>{c.source}</td>
-                <td>
-                  <div className="btn-group" style={{ justifyContent: 'flex-end' }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => openEdit(c)} aria-label={`Edit ${c.name}`}><EditIcon /></button>
-                    <button className="btn btn-ghost btn-sm text-danger" onClick={() => handleDelete(c.id)} aria-label={`Hapus ${c.name}`}><TrashIcon /></button>
-                  </div>
-                </td>
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-8)' }}>
+          <span className="spinner" />
+        </div>
+      ) : (
+        <div className="table-container table-mobile-cards">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Nama Kategori</th>
+                <th>Tipe</th>
+                <th>Auto/Manual</th>
+                <th>Sumber</th>
+                <th style={{ textAlign: 'right' }}>Aksi</th>
               </tr>
-            ))}
-            {filtered.length === 0 && (
-              <tr><td colSpan={5} className="text-center text-secondary" style={{ padding: 'var(--space-8)' }}>Tidak ada kategori ditemukan</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filtered.map((c: SettingsPnlCategory) => (
+                <tr key={c.id}>
+                  <td><span className="table-responsive-label">Nama: </span><span className="font-semibold">{c.name}</span></td>
+                  <td><span className="table-responsive-label">Tipe: </span><TypeBadge type={c.type} /></td>
+                  <td><span className="table-responsive-label">Mode: </span><AutoManualBadge value={c.autoManual} /></td>
+                  <td><span className="table-responsive-label">Sumber: </span>{c.source}</td>
+                  <td>
+                    <div className="btn-group" style={{ justifyContent: 'flex-end' }}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => openEdit(c)} aria-label={`Edit ${c.name}`}><EditIcon /></button>
+                      <button className="btn btn-ghost btn-sm text-danger" onClick={() => handleDelete(c.id)} aria-label={`Hapus ${c.name}`}><TrashIcon /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={5} className="text-center text-secondary" style={{ padding: 'var(--space-8)' }}>Tidak ada kategori ditemukan</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {modal && (
         <Modal title={modal.mode === 'add' ? 'Tambah Kategori P&L' : 'Edit Kategori P&L'} onClose={() => setModal(null)}>

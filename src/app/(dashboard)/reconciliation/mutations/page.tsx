@@ -316,16 +316,47 @@ function MutationsPageContent() {
         const supabase = createClient()
         if (supabase) {
           const { data, error } = await supabase
-            .from('expense_categories')
-            .select('*')
-            .eq('is_active', true)
+            .from('pnl_categories')
+            .select('id, name, type')
+            .in('type', ['operating_expense', 'other_expense', 'cogs'])
           if (error) throw error
           if (data && data.length > 0) {
-            setCategories(data)
+            setCategories(data.map((c: any) => ({ id: c.id, name: c.name })))
           }
         }
       } catch (err) {
         console.error('Failed to load categories from Supabase:', err)
+      }
+    } else {
+      // Demo Mode
+      try {
+        const localCatsStr = localStorage.getItem('raja-aksesoris-pnl-categories')
+        let parsed = []
+        if (localCatsStr) {
+          parsed = JSON.parse(localCatsStr)
+        } else {
+          parsed = [
+            { id: 'pnl-c1', name: 'HPP / COGS', type: 'COGS' },
+            { id: 'pnl-c2', name: 'Biaya Operasional (Kas Kecil)', type: 'Operating Expense' },
+            { id: 'pnl-c3', name: 'Gaji & Komisi', type: 'Operating Expense' },
+            { id: 'pnl-c4', name: 'Sewa Toko', type: 'Operating Expense' },
+            { id: 'pnl-c5', name: 'Marketing / Iklan', type: 'Operating Expense' },
+            { id: 'pnl-c6', name: 'Penyusutan Aset', type: 'Operating Expense' },
+            { id: 'pnl-c7', name: 'Beban Lain-lain', type: 'Other Expense' }
+          ]
+          localStorage.setItem('raja-aksesoris-pnl-categories', JSON.stringify(parsed))
+        }
+        const filtered = parsed.filter((c: any) => 
+          c.type === 'Operating Expense' || 
+          c.type === 'Other Expense' || 
+          c.type === 'COGS' ||
+          c.type === 'operating_expense' || 
+          c.type === 'other_expense' || 
+          c.type === 'cogs'
+        )
+        setCategories(filtered.map((c: any) => ({ id: c.id, name: c.name })))
+      } catch (e) {
+        console.error(e)
       }
     }
   }
