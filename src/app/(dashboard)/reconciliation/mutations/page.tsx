@@ -6,6 +6,7 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 import { Badge, Table, Modal, ToastProvider, useToast } from '@/components/ui'
 import { isSupabaseConfigured, createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/hooks/useAuth'
+import { useBranch } from '@/hooks/useBranch'
 import type { TableColumn } from '@/components/ui/Table'
 
 /* ── SVG Icons ─────────────────────────────────────────────────────────── */
@@ -59,6 +60,22 @@ interface MutationFormData {
   keterangan: string
   noRef: string
 }
+
+interface PettyCashCategory {
+  id: string
+  name: string
+  is_active?: boolean
+}
+
+const PETTY_CASH_CATEGORIES: PettyCashCategory[] = [
+  { id: 'cat-1', name: 'Supplies / Perlengkapan' },
+  { id: 'cat-2', name: 'Biaya Operasional' },
+  { id: 'cat-3', name: 'Ongkos Kirim' },
+  { id: 'cat-4', name: 'Transport Antar Cabang' },
+  { id: 'cat-5', name: 'Perbaikan / Maintenance' },
+  { id: 'cat-6', name: 'Makan Event' },
+  { id: 'cat-7', name: 'Lain-lain' }
+]
 
 /* ── Demo Bank Account & Mutations ────────────────────────────────────── */
 
@@ -206,6 +223,10 @@ function parseBCACSV(text: string, currentYear: number): { dateStr: string; desc
 function MutationsPageContent() {
   const { profile } = useAuth()
   const toast = useToast()
+  const { branches } = useBranch(profile)
+  const [categories, setCategories] = useState<PettyCashCategory[]>(PETTY_CASH_CATEGORIES)
+  const [unmatchedSales, setUnmatchedSales] = useState<any[]>([])
+  const [tempMutations, setTempMutations] = useState<any[] | null>(null)
 
   const [accounts, setAccounts] = useState<BankAccount[]>([])
   const [selectedAccountId, setSelectedAccountId] = useState<string>('')
@@ -288,6 +309,83 @@ function MutationsPageContent() {
     }
   }
 
+  // Fetch expense categories
+  const loadCategories = async () => {
+    if (supabaseActive) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          const { data, error } = await supabase
+            .from('expense_categories')
+            .select('*')
+            .eq('is_active', true)
+          if (error) throw error
+          if (data && data.length > 0) {
+            setCategories(data)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load categories from Supabase:', err)
+      }
+    }
+  }
+
+  // Fetch unmatched sales reconciliations
+  const loadUnmatchedSales = async () => {
+    if (supabaseActive) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          const { data, error } = await supabase
+            .from('reconciliations')
+            .select(`
+              id,
+              sale_date,
+              expected_settlement,
+              branches (id, name),
+              payment_methods (id, name)
+            `)
+            .or('status.eq.pending,status.eq.discrepancy')
+          if (error) throw error
+          
+          const mapped = (data || []).map((row: any) => ({
+            id: row.id,
+            date: row.sale_date,
+            branchName: row.branches?.name || 'Unknown',
+            branchId: row.branches?.id,
+            methodName: row.payment_methods?.name || 'Unknown',
+            amount: parseFloat(row.expected_settlement) || 0
+          }))
+          setUnmatchedSales(mapped)
+          return mapped
+        }
+      } catch (err) {
+        console.error('Failed to load unmatched sales:', err)
+      }
+    } else {
+      // Demo Mode
+      try {
+        const localReconsStr = localStorage.getItem('raja-aksesoris-reconciliations') || '[]'
+        const localRecons: any[] = JSON.parse(localReconsStr)
+        const pendingRecons = localRecons.filter(r => r.status === 'pending' || r.status === 'discrepancy')
+        
+        const mapped = pendingRecons.map(row => ({
+          id: row.id,
+          date: row.date,
+          branchName: row.branchName,
+          branchId: row.branchId,
+          methodName: row.paymentMethodName,
+          amount: row.expectedSettlement
+        }))
+        setUnmatchedSales(mapped)
+        return mapped
+      } catch (err) {
+        console.error('Failed to load local unmatched sales:', err)
+      }
+    }
+    return []
+  }
+
   // 2. Fetch mutations
   const loadMutations = async () => {
     if (!selectedAccountId) return
@@ -362,6 +460,7 @@ function MutationsPageContent() {
   // Load account on mount
   useEffect(() => {
     loadBankAccounts()
+    loadCategories()
   }, [])
 
   // Load mutations when selected account changes
@@ -387,6 +486,164 @@ function MutationsPageContent() {
   }, [mutations, dateFrom, dateTo])
 
   /* ── CSV BCA Upload Handler ────────────────────────────────────────── */
+  const handleTempRowChange = (rowId: string, field: string, value: string) => {
+    setTempMutations(prev => {
+      if (!prev) return null
+      return prev.map(row => {
+        if (row.id === rowId) {
+          const updated = { ...row, [field]: value }
+          if (field === 'category_id' && value && !row.branchId) {
+            updated.branchId = branches[0]?.id || 'b1'
+          }
+          return updated
+        }
+        return row
+      })
+    })
+  }
+
+  const handleCancelImport = () => {
+    setTempMutations(null)
+    toast.success('Impor CSV dibatalkan. Silakan unggah file CSV baru jika diperlukan.')
+  }
+
+  const handleConfirmImport = async () => {
+    if (!tempMutations || tempMutations.length === 0) return
+    setLoading(true)
+
+    let addedCount = 0
+
+    try {
+      if (supabaseActive) {
+        const supabase = createClient()
+        if (supabase) {
+          const insertPromises: Promise<any>[] = []
+
+          for (const row of tempMutations) {
+            const isReconciled = !!row.matchedSaleId || !!row.category_id
+            
+            const insertMutation = async () => {
+              const { data: inserted, error: insertError } = await supabase
+                .from('bank_mutations')
+                .insert({
+                  bank_account_id: selectedAccountId,
+                  mutation_date: row.dateStr,
+                  amount: row.amount,
+                  description: row.description,
+                  reference_number: row.signature,
+                  is_reconciled: isReconciled,
+                  created_by: profile?.id
+                })
+                .select()
+              
+              if (insertError) throw insertError
+
+              // If matched with daily sales reconciliation, update status
+              if (row.matchedSaleId && inserted && inserted.length > 0) {
+                const { error: updateReconError } = await supabase
+                  .from('reconciliations')
+                  .update({
+                    status: 'matched',
+                    actual_amount: row.amount
+                  })
+                  .eq('id', row.matchedSaleId)
+                
+                if (updateReconError) throw updateReconError
+              }
+
+              // If expense categorized, create petty cash record
+              if (row.category_id && inserted && inserted.length > 0) {
+                const { error: insertPCError } = await supabase
+                  .from('petty_cash')
+                  .insert({
+                    branch_id: row.branchId || 'b1',
+                    transaction_date: row.dateStr,
+                    category_id: row.category_id,
+                    description: `[Auto-import Mutasi] ${row.description}`,
+                    amount: Math.abs(row.amount),
+                    type: 'expense',
+                    created_by: profile?.id
+                  })
+                if (insertPCError) throw insertPCError
+              }
+            }
+
+            insertPromises.push(insertMutation())
+            addedCount++
+          }
+
+          const results = await Promise.all(insertPromises)
+          const hasError = results.some((r: any) => r && r.error)
+          if (hasError) throw new Error('Beberapa transaksi gagal diimpor ke server.')
+        }
+      } else {
+        // Demo Mode (localStorage)
+        const localMutsStr = localStorage.getItem('raja-aksesoris-bank-mutations') || '[]'
+        const localMuts: any[] = JSON.parse(localMutsStr)
+
+        const localReconsStr = localStorage.getItem('raja-aksesoris-reconciliations') || '[]'
+        const localRecons: any[] = JSON.parse(localReconsStr)
+
+        const localPCStr = localStorage.getItem('raja-aksesoris-petty-cash') || '[]'
+        const localPC: any[] = JSON.parse(localPCStr)
+
+        for (const row of tempMutations) {
+          const isReconciled = !!row.matchedSaleId || !!row.category_id
+          const newMutId = `mut-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+          // 1. Save Bank Mutation
+          localMuts.push({
+            id: newMutId,
+            tanggal: row.dateStr,
+            jumlah: row.amount,
+            keterangan: row.description,
+            noRef: row.signature,
+            reconciled: isReconciled,
+            bankAccountId: selectedAccountId
+          })
+
+          // 2. If matched with daily sales reconciliation, update status
+          if (row.matchedSaleId) {
+            const reconIndex = localRecons.findIndex(r => String(r.id) === String(row.matchedSaleId))
+            if (reconIndex !== -1) {
+              localRecons[reconIndex].status = 'matched'
+              localRecons[reconIndex].actualAmount = row.amount
+            }
+          }
+
+          // 3. If expense categorized, create petty cash record
+          if (row.category_id) {
+            localPC.push({
+              id: `pc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              branchId: row.branchId || 'b1',
+              dateStr: row.dateStr,
+              type: 'expense',
+              categoryId: row.category_id,
+              description: `[Auto-import Mutasi] ${row.description}`,
+              amount: Math.abs(row.amount),
+              receiptPreview: ''
+            })
+          }
+
+          addedCount++
+        }
+
+        localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify(localMuts))
+        localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(localRecons))
+        localStorage.setItem('raja-aksesoris-petty-cash', JSON.stringify(localPC))
+      }
+
+      toast.success(`Berhasil menyimpan ${addedCount} transaksi mutasi bank.`)
+      setTempMutations(null)
+      loadMutations()
+    } catch (err: any) {
+      console.error('Failed to confirm import:', err)
+      toast.error(err.message || 'Gagal menyimpan hasil impor mutasi.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleCSVUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -405,87 +662,83 @@ function MutationsPageContent() {
           return
         }
 
-        let addedCount = 0
-        let duplicateCount = 0
+        // Fetch existing signatures to prevent duplicates
+        let existingSignatures = new Set<string>()
 
         if (supabaseActive) {
           const supabase = createClient()
           if (supabase) {
-            // Fetch existing signatures in database to prevent duplicates
             const { data: existingMuts, error } = await supabase
               .from('bank_mutations')
               .select('reference_number')
               .eq('bank_account_id', selectedAccountId)
             
             if (error) throw error
-            const existingSignatures = new Set(
+            existingSignatures = new Set(
               (existingMuts || []).map((m: any) => m.reference_number).filter(Boolean)
             )
-
-            const insertPromises: Promise<any>[] = []
-
-            for (const row of parsedRows) {
-              if (existingSignatures.has(row.signature)) {
-                duplicateCount++
-                continue
-              }
-
-              const insertMutation = async () => {
-                return await supabase.from('bank_mutations').insert({
-                  bank_account_id: selectedAccountId,
-                  mutation_date: row.dateStr,
-                  amount: row.amount,
-                  description: row.description,
-                  reference_number: row.signature,
-                  is_reconciled: false,
-                  created_by: profile?.id
-                })
-              }
-              insertPromises.push(insertMutation())
-              addedCount++
-            }
-
-            if (insertPromises.length > 0) {
-              const results = await Promise.all(insertPromises)
-              const hasError = results.some(r => r.error)
-              if (hasError) throw new Error('Beberapa transaksi gagal diimpor ke server.')
-            }
           }
         } else {
-          // Demo Mode
           const localMutsStr = localStorage.getItem('raja-aksesoris-bank-mutations') || '[]'
           const localMuts: any[] = JSON.parse(localMutsStr)
-          
-          const existingSignatures = new Set(localMuts.map(m => m.noRef).filter(Boolean))
-
-          for (const row of parsedRows) {
-            if (existingSignatures.has(row.signature)) {
-              duplicateCount++
-              continue
-            }
-
-            localMuts.push({
-              id: `mut-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-              tanggal: row.dateStr,
-              jumlah: row.amount,
-              keterangan: row.description,
-              noRef: row.signature,
-              reconciled: false,
-              bankAccountId: selectedAccountId
-            })
-            addedCount++
-          }
-
-          localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify(localMuts))
+          existingSignatures = new Set(localMuts.map(m => m.noRef).filter(Boolean))
         }
 
-        toast.success(`Berhasil mengimpor ${addedCount} mutasi baru. (${duplicateCount} transaksi duplikat dilewati)`)
-        loadMutations()
+        // Load the latest unmatched sales for auto-matching
+        const latestSales = await loadUnmatchedSales()
+
+        const tempRows: any[] = []
+        let duplicateCount = 0
+
+        parsedRows.forEach((row, index) => {
+          if (existingSignatures.has(row.signature)) {
+            duplicateCount++
+            return
+          }
+
+          const type = row.amount >= 0 ? 'CR' : 'DB'
+          
+          // Try to auto-suggest matchedSaleId
+          let matchedSaleId = ''
+          if (type === 'CR') {
+            const exactMatch = latestSales.find(sale => {
+              const dateDiff = Math.abs(new Date(sale.date).getTime() - new Date(row.dateStr).getTime()) / (1000 * 60 * 60 * 24)
+              return Math.abs(sale.amount - row.amount) <= (sale.amount * 0.01) && dateDiff <= 3
+            })
+            if (exactMatch) {
+              matchedSaleId = exactMatch.id
+            }
+          }
+
+          tempRows.push({
+            id: `temp-${index}-${Date.now()}`,
+            dateStr: row.dateStr,
+            description: row.description,
+            amount: row.amount,
+            balance: row.balance,
+            signature: row.signature,
+            type,
+            category_id: '',
+            branchId: branches[0]?.id || 'b1',
+            matchedSaleId
+          })
+        })
+
+        if (tempRows.length === 0) {
+          toast.warning(`Impor CSV selesai. Semua ${duplicateCount} transaksi di dalam file CSV sudah ada sebelumnya (duplikat).`)
+          return
+        }
+
+        setTempMutations(tempRows)
+        if (duplicateCount > 0) {
+          toast.success(`Pratinjau impor berhasil dimuat. ${duplicateCount} transaksi duplikat dilewati.`)
+        } else {
+          toast.success('Pratinjau impor berhasil dimuat.')
+        }
       } catch (err: any) {
         console.error('Error importing CSV:', err)
         toast.error(err.message || 'Gagal membaca dan mengimpor file CSV.')
       } finally {
-        // Clear value of uploader input so it can trigger onChange again for same file
         e.target.value = ''
       }
     }
@@ -644,7 +897,7 @@ function MutationsPageContent() {
             type="button"
             className="btn btn-secondary"
             onClick={() => document.getElementById('csv-uploader')?.click()}
-            disabled={!selectedAccountId}
+            disabled={!selectedAccountId || !!tempMutations}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '6px' }}>
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -658,7 +911,7 @@ function MutationsPageContent() {
             type="button"
             className="btn btn-primary"
             onClick={() => setModalOpen(true)}
-            disabled={!selectedAccountId}
+            disabled={!selectedAccountId || !!tempMutations}
           >
             <IconPlus />
             Tambah Mutasi
@@ -711,65 +964,178 @@ function MutationsPageContent() {
         </div>
       </div>
 
-      {/* ── Date Range Filter ────────────────────────────────────────── */}
-      <div className="card mb-6 animate-slide-up delay-2">
-        <div className="card-body">
-          <div className="flex items-end gap-4 flex-wrap">
-            <div className="flex items-center gap-2">
-              <IconFilter />
-              <span className="font-medium text-sm">Filter Tanggal:</span>
+      {tempMutations ? (
+        /* ── Preview Table for CSV import ────────────────────────────── */
+        <div className="card mb-6 animate-slide-up">
+          <div className="card-header flex items-center justify-between" style={{ borderBottom: '1px solid var(--color-border)', flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h3>Pratinjau Impor Mutasi Bank</h3>
+              <p className="text-sm text-secondary" style={{ marginTop: 'var(--space-1)' }}>
+                Tinjau rincian transaksi dari CSV. Anda dapat mencocokkan kredit dengan Penjualan Harian atau mengategorikan debet pengeluaran ke Kas Kecil.
+              </p>
             </div>
-            <div className="input-group" style={{ maxWidth: '200px', margin: 0 }}>
-              <label className="input-label" htmlFor="date-from">Dari</label>
-              <input
-                id="date-from"
-                type="date"
-                className="input"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                style={{ minHeight: '40px' }}
-              />
-            </div>
-            <div className="input-group" style={{ maxWidth: '200px', margin: 0 }}>
-              <label className="input-label" htmlFor="date-to">Sampai</label>
-              <input
-                id="date-to"
-                type="date"
-                className="input"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                style={{ minHeight: '40px' }}
-              />
-            </div>
-            {(dateFrom || dateTo) && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => { setDateFrom(''); setDateTo('') }}
-              >
-                Reset
+            <div className="flex gap-2">
+              <button type="button" className="btn btn-secondary" onClick={handleCancelImport} disabled={loading}>
+                Batal Impor
               </button>
-            )}
+              <button type="button" className="btn btn-success" onClick={handleConfirmImport} disabled={loading}>
+                Konfirmasi & Simpan ({tempMutations.length} Transaksi)
+              </button>
+            </div>
           </div>
-        </div>
-      </div>
-
-      {/* ── Mutations Table ──────────────────────────────────────────── */}
-      {loading ? (
-        <div className="card">
-          <div className="card-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 'var(--space-12)' }}>
-            <span className="spinner spinner-lg" />
-            <p style={{ marginTop: 'var(--space-4)', color: 'var(--color-text-secondary)' }}>Memuat data mutasi bank...</p>
+          <div className="card-body p-0">
+            <div className="table-container">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Tanggal</th>
+                    <th>Keterangan</th>
+                    <th>Tipe</th>
+                    <th style={{ textAlign: 'right' }}>Jumlah</th>
+                    <th style={{ textAlign: 'right' }}>Saldo</th>
+                    <th style={{ width: '380px' }}>Aksi (Pencocokan / Kategori Biaya)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tempMutations.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <span className="font-semibold">{formatDate(new Date(row.dateStr))}</span>
+                      </td>
+                      <td style={{ fontSize: 'var(--text-xs)', maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.description}>
+                        {row.description}
+                      </td>
+                      <td>
+                        <Badge variant={row.type === 'CR' ? 'success' : 'danger'}>
+                          {row.type === 'CR' ? 'Credit (CR)' : 'Debit (DB)'}
+                        </Badge>
+                      </td>
+                      <td style={{ textAlign: 'right', fontWeight: 'var(--font-semibold)', color: row.type === 'CR' ? 'var(--color-success-text)' : 'inherit' }}>
+                        {row.type === 'CR' ? '+' : ''}{formatCurrency(row.amount)}
+                      </td>
+                      <td style={{ textAlign: 'right', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
+                        {formatCurrency(row.balance)}
+                      </td>
+                      <td>
+                        {row.type === 'CR' ? (
+                          <select
+                            className="select w-full"
+                            style={{ fontSize: 'var(--text-xs)', minHeight: '34px', padding: '4px 8px' }}
+                            value={row.matchedSaleId || ''}
+                            onChange={(e) => handleTempRowChange(row.id, 'matchedSaleId', e.target.value)}
+                            aria-label="Pilih data penjualan"
+                          >
+                            <option value="">-- Simpan Saja (Tidak Dicocokkan) --</option>
+                            {unmatchedSales.map((sale) => (
+                              <option key={sale.id} value={sale.id}>
+                                {formatDate(new Date(sale.date))} - {sale.branchName} - {sale.methodName} ({formatCurrency(sale.amount)})
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="flex gap-2">
+                            <select
+                              className="select"
+                              style={{ fontSize: 'var(--text-xs)', minHeight: '34px', padding: '4px 8px', flex: 1 }}
+                              value={row.category_id || ''}
+                              onChange={(e) => handleTempRowChange(row.id, 'category_id', e.target.value)}
+                              aria-label="Pilih kategori biaya"
+                            >
+                              <option value="">-- Kategori Pengeluaran --</option>
+                              {categories.map((cat) => (
+                                <option key={cat.id} value={cat.id}>
+                                  {cat.name}
+                                </option>
+                              ))}
+                            </select>
+                            {row.category_id && (
+                              <select
+                                className="select"
+                                style={{ fontSize: 'var(--text-xs)', minHeight: '34px', padding: '4px 8px', width: '130px' }}
+                                value={row.branchId || ''}
+                                onChange={(e) => handleTempRowChange(row.id, 'branchId', e.target.value)}
+                                aria-label="Pilih cabang"
+                              >
+                                {branches.map((b) => (
+                                  <option key={b.id} value={b.id}>
+                                    {b.name}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       ) : (
-        <div className="animate-slide-up delay-3">
-          <Table
-            columns={columns}
-            data={filteredMutations}
-            emptyMessage="Tidak ada data mutasi bank untuk rekening atau periode ini."
-          />
-        </div>
+        <>
+          {/* ── Date Range Filter ────────────────────────────────────────── */}
+          <div className="card mb-6 animate-slide-up delay-2">
+            <div className="card-body">
+              <div className="flex items-end gap-4 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <IconFilter />
+                  <span className="font-medium text-sm">Filter Tanggal:</span>
+                </div>
+                <div className="input-group" style={{ maxWidth: '200px', margin: 0 }}>
+                  <label className="input-label" htmlFor="date-from">Dari</label>
+                  <input
+                    id="date-from"
+                    type="date"
+                    className="input"
+                    value={dateFrom}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    style={{ minHeight: '40px' }}
+                  />
+                </div>
+                <div className="input-group" style={{ maxWidth: '200px', margin: 0 }}>
+                  <label className="input-label" htmlFor="date-to">Sampai</label>
+                  <input
+                    id="date-to"
+                    type="date"
+                    className="input"
+                    value={dateTo}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    style={{ minHeight: '40px' }}
+                  />
+                </div>
+                {(dateFrom || dateTo) && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => { setDateFrom(''); setDateTo('') }}
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Mutations Table ──────────────────────────────────────────── */}
+          {loading ? (
+            <div className="card">
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 'var(--space-12)' }}>
+                <span className="spinner spinner-lg" />
+                <p style={{ marginTop: 'var(--space-4)', color: 'var(--color-text-secondary)' }}>Memuat data mutasi bank...</p>
+              </div>
+            </div>
+          ) : (
+            <div className="animate-slide-up delay-3">
+              <Table
+                columns={columns}
+                data={filteredMutations}
+                emptyMessage="Tidak ada data mutasi bank untuk rekening atau periode ini."
+              />
+            </div>
+          )}
+        </>
       )}
 
       {/* ── Add Mutation Modal ───────────────────────────────────────── */}
