@@ -909,6 +909,99 @@ function MutationsPageContent() {
     }
   }
 
+  const handleDeleteAllMutations = async () => {
+    if (!confirm('Apakah Anda yakin ingin menghapus semua mutasi bank untuk rekening ini? Transaksi yang sudah dicocokkan (reconciled) akan dikembalikan statusnya menjadi pending.')) return
+    setLoading(true)
+
+    try {
+      if (supabaseActive) {
+        const supabase = createClient()
+        if (supabase) {
+          // 1. Fetch mutations of this account first to get their IDs
+          const { data: muts, error: fetchMutsError } = await supabase
+            .from('bank_mutations')
+            .select('id')
+            .eq('bank_account_id', selectedAccountId)
+          
+          if (fetchMutsError) throw fetchMutsError
+
+          if (muts && muts.length > 0) {
+            const mutIds = muts.map(m => m.id)
+            
+            // Reset any reconciliations referencing these mutations
+            const { error: resetReconError } = await supabase
+              .from('reconciliations')
+              .update({
+                status: 'pending',
+                actual_amount: 0,
+                bank_mutation_id: null,
+                settlement_date: null,
+                discrepancy_amount: null
+              })
+              .in('bank_mutation_id', mutIds)
+            
+            if (resetReconError) {
+              console.error('Failed to reset linked reconciliations:', resetReconError)
+            }
+
+            // 2. Delete all mutations for this account
+            const { error: deleteMutsError } = await supabase
+              .from('bank_mutations')
+              .delete()
+              .eq('bank_account_id', selectedAccountId)
+            
+            if (deleteMutsError) throw deleteMutsError
+          }
+        }
+      } else {
+        // Demo Mode (localStorage)
+        const localMutsStr = localStorage.getItem('raja-aksesoris-bank-mutations') || '[]'
+        let localMuts: any[] = JSON.parse(localMutsStr)
+        
+        // Filter out mutations belonging to this bank account
+        const mutsToDelete = localMuts.filter(m => String(m.bankAccountId) === String(selectedAccountId))
+        const deleteIds = new Set(mutsToDelete.map(m => String(m.id)))
+
+        if (mutsToDelete.length > 0) {
+          // Keep only mutations NOT belonging to this bank account
+          const keptMuts = localMuts.filter(m => String(m.bankAccountId) !== String(selectedAccountId))
+          localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify(keptMuts))
+
+          // Reset all reconciliations linked to these mutations
+          const localReconsStr = localStorage.getItem('raja-aksesoris-reconciliations') || '[]'
+          const localRecons: any[] = JSON.parse(localReconsStr)
+
+          let reconChanged = false
+          const updatedRecons = localRecons.map(r => {
+            if (r.bankMutationId && deleteIds.has(String(r.bankMutationId))) {
+              reconChanged = true
+              return {
+                ...r,
+                status: 'pending',
+                actualAmount: 0,
+                bankMutationId: null,
+                discrepancyAmount: null
+              }
+            }
+            return r
+          })
+
+          if (reconChanged) {
+            localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(updatedRecons))
+          }
+        }
+      }
+
+      toast.success('Semua mutasi bank untuk rekening ini berhasil dihapus.')
+      loadMutations()
+    } catch (err: any) {
+      console.error('Failed to delete all bank mutations:', err)
+      toast.error(err.message || 'Gagal menghapus semua mutasi bank.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   /* ── Table Columns ──────────────────────────────────────────────── */
   const columns: TableColumn<MutationRow>[] = [
     {
@@ -1012,6 +1105,19 @@ function MutationsPageContent() {
           >
             <IconPlus />
             Tambah Mutasi
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{ backgroundColor: '#ef4444', color: '#fff', border: 'none' }}
+            onClick={handleDeleteAllMutations}
+            disabled={!selectedAccountId || !!tempMutations || mutations.length === 0}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px', verticalAlign: 'middle' }}>
+              <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" />
+            </svg>
+            Hapus Semua
           </button>
         </div>
       </div>
