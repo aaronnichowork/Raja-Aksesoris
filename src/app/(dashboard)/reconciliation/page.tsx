@@ -113,6 +113,7 @@ export default function ReconciliationPage() {
               expected_settlement,
               actual_amount,
               status,
+              bank_mutation_id,
               branches (name),
               payment_methods (name)
             `)
@@ -120,6 +121,28 @@ export default function ReconciliationPage() {
             .lte('sale_date', endDate)
 
           if (error) throw error
+
+          // Auto-heal orphaned Supabase reconciliations (matched but no linked mutation ID)
+          const orphanedRecons = (dbData || []).filter((r: any) =>
+            (r.status === 'matched' || r.status === 'discrepancy') && !r.bank_mutation_id
+          )
+
+          if (orphanedRecons.length > 0) {
+            const orphanedIds = orphanedRecons.map((r: any) => r.id)
+            await supabase
+              .from('reconciliations')
+              .update({
+                status: 'pending',
+                actual_amount: 0,
+                bank_mutation_id: null,
+                settlement_date: null,
+                discrepancy_amount: null
+              })
+              .in('id', orphanedIds)
+
+            loadData()
+            return
+          }
 
           const mapped: MappedReconRow[] = (dbData || []).map((row: any) => ({
             id: row.id,
@@ -156,8 +179,32 @@ export default function ReconciliationPage() {
           // Clean up any existing demo data
           const beforeCount = parsed.length
           parsed = parsed.filter(item => !String(item.id).startsWith('recon-demo-'))
-          if (parsed.length !== beforeCount) {
-            localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(parsed))
+
+          // Auto-heal orphaned local reconciliations (matched but no existing mutation ID)
+          const localMutsStr = localStorage.getItem('raja-aksesoris-bank-mutations') || '[]'
+          const localMuts = JSON.parse(localMutsStr) as any[]
+          const existingMutIds = new Set(localMuts.map(m => String(m.id)))
+
+          let reconsChanged = false
+          const cleaned = parsed.map(r => {
+            const isMatchedState = r.status === 'matched' || r.status === 'discrepancy'
+            const hasInvalidMut = !r.bankMutationId || !existingMutIds.has(String(r.bankMutationId))
+            if (isMatchedState && hasInvalidMut) {
+              reconsChanged = true
+              return {
+                ...r,
+                status: 'pending',
+                actualAmount: 0,
+                bankMutationId: null,
+                discrepancyAmount: null
+              }
+            }
+            return r
+          })
+
+          if (reconsChanged || parsed.length !== beforeCount) {
+            localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(cleaned))
+            parsed = cleaned
           }
 
           const filtered = parsed.filter(item => {
