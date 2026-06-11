@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react'
 import Link from 'next/link'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { Badge, useToast } from '@/components/ui'
+import { Badge, ToastProvider, useToast } from '@/components/ui'
 import { isSupabaseConfigured, createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/hooks/useAuth'
 
@@ -81,7 +81,7 @@ interface MatchPair {
 
 /* ── Page Component ───────────────────────────────────────────────────── */
 
-export default function MatchPage() {
+function MatchPageContent() {
   const toast = useToast()
   const { profile } = useAuth()
 
@@ -693,5 +693,13 @@ export default function MatchPage() {
         </>
       )}
     </div>
+  )
+}
+
+export default function MatchPage() {
+  return (
+    <ToastProvider>
+      <MatchPageContent />
+    </ToastProvider>
   )
 }

@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react'
 import Link from 'next/link'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { Badge, Table, Modal, useToast } from '@/components/ui'
+import { Badge, Table, Modal, ToastProvider, useToast } from '@/components/ui'
 import { isSupabaseConfigured, createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/hooks/useAuth'
 import type { TableColumn } from '@/components/ui/Table'
@@ -240,7 +240,7 @@ function parseBCACSV(text: string, currentYear: number): { dateStr: string; desc
 
 /* ── Page Component ───────────────────────────────────────────────────── */
 
-export default function MutationsPage() {
+function MutationsPageContent() {
   const { profile } = useAuth()
   const toast = useToast()
 
@@ -907,5 +907,13 @@ export default function MutationsPage() {
         </div>
       </Modal>
     </div>
+  )
+}
+
+export default function MutationsPage() {
+  return (
+    <ToastProvider>
+      <MutationsPageContent />
+    </ToastProvider>
   )
 }
