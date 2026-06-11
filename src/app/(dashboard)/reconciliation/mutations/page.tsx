@@ -540,11 +540,21 @@ function MutationsPageContent() {
 
               // If matched with daily sales reconciliation, update status
               if (row.matchedSaleId && inserted && inserted.length > 0) {
+                const matchedSale = unmatchedSales.find(s => String(s.id) === String(row.matchedSaleId))
+                const expectedAmt = matchedSale ? matchedSale.amount : 0
+                const diff = row.amount - expectedAmt
+                const isExact = diff === 0
+                const status = isExact ? 'matched' : 'discrepancy'
+
                 const { error: updateReconError } = await supabase
                   .from('reconciliations')
                   .update({
-                    status: 'matched',
-                    actual_amount: row.amount
+                    status: status,
+                    actual_amount: row.amount,
+                    bank_mutation_id: inserted[0].id,
+                    settlement_date: row.dateStr,
+                    discrepancy_amount: diff,
+                    reconciled_by: profile?.id
                   })
                   .eq('id', row.matchedSaleId)
                 
@@ -606,8 +616,15 @@ function MutationsPageContent() {
           if (row.matchedSaleId) {
             const reconIndex = localRecons.findIndex(r => String(r.id) === String(row.matchedSaleId))
             if (reconIndex !== -1) {
-              localRecons[reconIndex].status = 'matched'
+              const expectedAmt = localRecons[reconIndex].expectedSettlement || 0
+              const diff = row.amount - expectedAmt
+              const isExact = diff === 0
+              const status = isExact ? 'matched' : 'discrepancy'
+
+              localRecons[reconIndex].status = status
               localRecons[reconIndex].actualAmount = row.amount
+              localRecons[reconIndex].bankMutationId = newMutId
+              localRecons[reconIndex].discrepancyAmount = diff
             }
           }
 
