@@ -50,64 +50,6 @@ function IconDelta() {
   )
 }
 
-/* ── Demo Data ─────────────────────────────────────────────────────────── */
-
-const DEMO_BRANCH_NAMES = [
-  'Mojokerto',
-  'Jombang',
-  'Kediri',
-  'Mojoagung',
-  'Tulungagung',
-]
-
-const PAYMENT_METHODS = ['Cash', 'Transfer Bank', 'QRIS', 'Debit', 'Kartu Kredit', 'Shopee', 'TikTok']
-
-interface DemoDataRow {
-  id: number
-  tanggal: Date
-  cabang: string
-  metode: string
-  omset: number
-  mdr: number
-  expected: number
-  actual: number
-  status: 'matched' | 'pending' | 'discrepancy'
-}
-
-function generateDemoData(month: number, year: number, branchNames: string[]): DemoDataRow[] {
-  const daysInMonth = new Date(year, month + 1, 0).getDate()
-  const rows: DemoDataRow[] = []
-  let id = 1
-
-  const branchesToUse = branchNames.length > 0 ? branchNames : DEMO_BRANCH_NAMES
-
-  for (let day = 1; day <= Math.min(daysInMonth, 15); day++) {
-    const branch = branchesToUse[day % branchesToUse.length]
-    const method = PAYMENT_METHODS[day % PAYMENT_METHODS.length]
-    const omset = Math.round((500000 + Math.random() * 5000000) / 1000) * 1000
-    const mdrRate = method === 'Cash' ? 0 : method === 'Transfer Bank' ? 0 : method === 'QRIS' ? 0.7 : method === 'Debit' ? 0.6 : method === 'Kartu Kredit' ? 2.2 : 3
-    const mdr = Math.round(omset * mdrRate / 100)
-    const expected = omset - mdr
-    const statusRoll = Math.random()
-    const status = statusRoll < 0.5 ? 'matched' : statusRoll < 0.8 ? 'pending' : 'discrepancy'
-    const actual = status === 'matched' ? expected : status === 'pending' ? 0 : expected + Math.round((Math.random() - 0.5) * 100000)
-
-    rows.push({
-      id: id++,
-      tanggal: new Date(year, month, day),
-      cabang: branch,
-      metode: method,
-      omset,
-      mdr,
-      expected,
-      actual,
-      status,
-    })
-  }
-
-  return rows
-}
-
 /* ── Status Badge helper ──────────────────────────────────────────────── */
 
 interface StatusBadgeProps {
@@ -201,44 +143,23 @@ export default function ReconciliationPage() {
       // Demo Mode: read from localStorage
       let localRecons = localStorage.getItem('raja-aksesoris-reconciliations')
       
-      // Wait for branches to load before generating demo data
+      // Wait for branches to load before processing
       if (branches.length > 0) {
         if (!localRecons) {
-          // Pre-fill local storage with 3 months of mock data if empty
-          const initialRecons: any[] = []
-          const today = new Date()
-          const branchNames = branches.map(b => b.name)
-          for (let mOffset = -2; mOffset <= 0; mOffset++) {
-            const targetMonth = new Date(today.getFullYear(), today.getMonth() + mOffset, 1)
-            const m = targetMonth.getMonth()
-            const y = targetMonth.getFullYear()
-            const generated = generateDemoData(m, y, branchNames)
-            generated.forEach(item => {
-              const dateStr = item.tanggal.toISOString().split('T')[0]
-              const branchObj = branches.find(b => b.name === item.cabang)
-              const branchId = branchObj?.id || 'b1'
-              initialRecons.push({
-                id: `recon-demo-${m}-${item.id}`,
-                branchId: branchId,
-                branchName: item.cabang,
-                date: dateStr,
-                paymentMethodId: item.metode === 'Cash' ? 'pay-1' : 'pay-3',
-                paymentMethodName: item.metode,
-                expectedAmount: item.omset,
-                mdrAmount: item.mdr,
-                expectedSettlement: item.expected,
-                actualAmount: item.actual,
-                status: item.status,
-                notes: 'Data demo otomatis'
-              })
-            })
-          }
-          localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(initialRecons))
-          localRecons = JSON.stringify(initialRecons)
+          localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify([]))
+          localRecons = '[]'
         }
 
         try {
-          const parsed = JSON.parse(localRecons || '[]') as any[]
+          let parsed = JSON.parse(localRecons || '[]') as any[]
+          
+          // Clean up any existing demo data
+          const beforeCount = parsed.length
+          parsed = parsed.filter(item => !String(item.id).startsWith('recon-demo-'))
+          if (parsed.length !== beforeCount) {
+            localStorage.setItem('raja-aksesoris-reconciliations', JSON.stringify(parsed))
+          }
+
           const filtered = parsed.filter(item => {
             const itemDate = new Date(item.date)
             return itemDate.getMonth() === selectedMonth && itemDate.getFullYear() === selectedYear

@@ -69,53 +69,6 @@ const DEFAULT_DEMO_ACCOUNT: BankAccount = {
   account_name: 'PT Raja Aksesoris'
 }
 
-function generateDemoMutations(): MutationRow[] {
-  const descriptions = [
-    'Settlement QRIS - BCA',
-    'Transfer Masuk - Tokopedia',
-    'Settlement EDC Debit - BRI',
-    'Transfer Masuk - Shopee',
-    'Settlement Kartu Kredit - Mandiri',
-    'Transfer Masuk - Customer',
-    'Settlement QRIS - Mandiri',
-    'Pembayaran Supplier',
-    'Settlement EDC Debit - BCA',
-    'Transfer Masuk - Lazada',
-    'Settlement QRIS - BNI',
-    'Refund Customer',
-    'Settlement Kartu Kredit - BCA',
-  ]
-
-  const mutations: MutationRow[] = []
-  const today = new Date()
-  const year = today.getFullYear()
-  const month = today.getMonth()
-
-  for (let i = 0; i < 13; i++) {
-    const day = Math.min(1 + Math.floor(i * 2.3), 28)
-    const amount = Math.round((200000 + Math.random() * 8000000) / 1000) * 1000
-    const isReconciled = Math.random() > 0.45
-    const isExpense = descriptions[i].includes('Supplier') || descriptions[i].includes('Refund')
-
-    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    // Generate signature for demo mutations
-    const cleanDesc = descriptions[i].replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
-    const signature = `demo_${dateStr}_${cleanDesc}_${isExpense ? -amount : amount}`
-
-    mutations.push({
-      id: `mut-demo-${i}`,
-      tanggal: new Date(year, month, day),
-      jumlah: isExpense ? -amount : amount,
-      keterangan: descriptions[i],
-      noRef: signature,
-      reconciled: isReconciled,
-      bankAccountId: 'acc-demo-1'
-    })
-  }
-
-  return mutations
-}
-
 /* ── BCA CSV Parser Helper ────────────────────────────────────────────── */
 
 function parseBCACSV(text: string, currentYear: number): { dateStr: string; description: string; amount: number; balance: number; signature: string }[] {
@@ -363,13 +316,19 @@ function MutationsPageContent() {
       // Demo Mode
       let localMuts = localStorage.getItem('raja-aksesoris-bank-mutations')
       if (!localMuts) {
-        const demoMuts = generateDemoMutations()
-        localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify(demoMuts))
-        localMuts = JSON.stringify(demoMuts)
+        localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify([]))
+        localMuts = '[]'
       }
 
       try {
-        const parsed = JSON.parse(localMuts) as any[]
+        let parsed = JSON.parse(localMuts) as any[]
+        // Clean up any existing demo data
+        const beforeCount = parsed.length
+        parsed = parsed.filter(m => !String(m.id).startsWith('mut-demo-') && !String(m.noRef).startsWith('demo_'))
+        if (parsed.length !== beforeCount) {
+          localStorage.setItem('raja-aksesoris-bank-mutations', JSON.stringify(parsed))
+        }
+
         const filtered = parsed.filter(m => m.bankAccountId === selectedAccountId)
         
         const mapped: MutationRow[] = filtered.map(m => ({
