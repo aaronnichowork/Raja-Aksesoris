@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { createClient, isSupabaseConfigured } from '@/lib/supabase/client'
 import { useBranch } from '@/hooks/useBranch'
 import { useAuth } from '@/hooks/useAuth'
 import { formatCurrency, formatNumber, calculatePercentageChange, formatMonth } from '@/lib/utils'
@@ -53,63 +53,343 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setMounted(true)
-    // Simulate loading with demo data for now
-    const timer = setTimeout(() => {
-      loadDemoData()
-      setLoading(false)
-    }, 800)
-    return () => clearTimeout(timer)
-  }, [selectedBranch])
+    loadDashboardData()
+  }, [selectedBranch, branches])
 
-  const loadDemoData = () => {
+  const loadRealData = () => {
     const now = new Date()
     const currentMonth = now.getMonth()
     const currentYear = now.getFullYear()
-    const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate()
 
-    // Generate daily sales trend data
+    const prevMonthDate = new Date(currentYear, currentMonth - 1, 1)
+    const prevMonth = prevMonthDate.getMonth()
+    const prevYear = prevMonthDate.getFullYear()
+
+    const activeBranchId = selectedBranch?.id || (typeof selectedBranch === 'string' ? selectedBranch : undefined)
+
+    // 1. Load Daily Sales
+    const localSalesStr = localStorage.getItem('raja-aksesoris-daily-sales') || '[]'
+    let localSales: any[] = []
+    try {
+      localSales = JSON.parse(localSalesStr)
+    } catch (e) {
+      console.error(e)
+    }
+
+    // Filter by branch if selected
+    let branchSales = localSales
+    if (activeBranchId) {
+      branchSales = localSales.filter(item => String(item.branchId) === String(activeBranchId))
+    }
+
+    // Stats variables
+    let todaySales = 0
+    let monthSales = 0
+    let prevMonthSales = 0
+
+    const todayStr = now.toISOString().split('T')[0]
+
+    // Daily sales trend map
+    const dailyMap: Record<number, number> = {}
+    const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate()
+    for (let d = 1; d <= daysInMonth; d++) {
+      dailyMap[d] = 0
+    }
+
+    // Branch sales map
+    const branchMap: Record<string, number> = {}
+    branches.forEach(b => {
+      branchMap[b.name] = 0
+    })
+
+    // Payment breakdown map
+    const paymentMap: Record<string, number> = {}
+    const paymentMethodNames: Record<string, string> = {
+      'pay-1': 'Cash',
+      'pay-2': 'Transfer Bank',
+      'pay-3': 'QRIS',
+      'pay-4': 'Debit',
+      'pay-5': 'Kartu Kredit',
+      'pay-6': 'Shopee',
+      'pay-7': 'TikTok'
+    }
+    Object.values(paymentMethodNames).forEach(name => {
+      paymentMap[name] = 0
+    })
+
+    branchSales.forEach((item: any) => {
+      const itemDate = new Date(item.dateStr)
+      const itemMonth = itemDate.getMonth()
+      const itemYear = itemDate.getFullYear()
+      const itemDay = itemDate.getDate()
+
+      // Today's Sales
+      if (item.dateStr === todayStr) {
+        todaySales += item.totalOmset || 0
+      }
+
+      // Current Month's Sales
+      if (itemMonth === currentMonth && itemYear === currentYear) {
+        monthSales += item.totalOmset || 0
+        dailyMap[itemDay] = (dailyMap[itemDay] || 0) + (item.totalOmset || 0)
+
+        const branchObj = branches.find(b => String(b.id) === String(item.branchId))
+        const branchName = branchObj ? branchObj.name : 'Unknown'
+        branchMap[branchName] = (branchMap[branchName] || 0) + (item.totalOmset || 0)
+
+        if (item.sales) {
+          Object.entries(item.sales).forEach(([methodId, amount]: [string, any]) => {
+            const name = paymentMethodNames[methodId] || 'Unknown'
+            const amt = parseFloat(amount) || 0
+            paymentMap[name] = (paymentMap[name] || 0) + amt
+          })
+        }
+      }
+
+      // Previous Month's Sales
+      if (itemMonth === prevMonth && itemYear === prevYear) {
+        prevMonthSales += item.totalOmset || 0
+      }
+    })
+
+    // Prepare Daily Sales Trend Data Points
     const dailyData: DailySalesDataPoint[] = []
-    for (let i = 1; i <= Math.min(now.getDate(), daysInMonth); i++) {
-      const baseAmount = 3000000 + Math.random() * 5000000
+    const maxDay = now.getDate()
+    for (let i = 1; i <= maxDay; i++) {
       dailyData.push({
         tanggal: `${i}`,
-        omset: Math.round(baseAmount),
+        omset: dailyMap[i] || 0
       })
     }
     setDailySalesData(dailyData)
 
-    // Branch sales comparison
-    const branchNames = ['Mojokerto', 'Jombang', 'Kediri', 'Mojoagung', 'Tulungagung']
-    const branchData: BranchSalesDataPoint[] = branchNames.map((name) => ({
+    // Prepare Branch Sales Data Points
+    const branchSalesDataPoints: BranchSalesDataPoint[] = Object.entries(branchMap).map(([name, omset]) => ({
       cabang: name,
-      omset: Math.round(20000000 + Math.random() * 30000000),
+      omset
     }))
-    setBranchSalesData(branchData)
+    setBranchSalesData(branchSalesDataPoints)
 
-    // Payment method breakdown
-    const payments: PaymentBreakdownItem[] = [
-      { name: 'Cash', value: Math.round(35000000 + Math.random() * 10000000) },
-      { name: 'QRIS', value: Math.round(25000000 + Math.random() * 10000000) },
-      { name: 'Transfer', value: Math.round(20000000 + Math.random() * 10000000) },
-      { name: 'Debit', value: Math.round(15000000 + Math.random() * 5000000) },
-      { name: 'Shopee', value: Math.round(7000000 + Math.random() * 5000000) },
-      { name: 'TikTok', value: Math.round(3000000 + Math.random() * 3000000) },
-      { name: 'Kartu Kredit', value: Math.round(5000000 + Math.random() * 3000000) },
-    ]
-    setPaymentBreakdown(payments)
+    // Prepare Payment Breakdown
+    const paymentBreakdownData: PaymentBreakdownItem[] = Object.entries(paymentMap).map(([name, value]) => ({
+      name,
+      value
+    }))
+    setPaymentBreakdown(paymentBreakdownData)
 
-    // Stats
-    const todayTotal = dailyData[dailyData.length - 1]?.omset || 0
-    const monthTotal = dailyData.reduce((acc: number, d: DailySalesDataPoint) => acc + d.omset, 0)
-    const prevMonthTotal = monthTotal * (0.85 + Math.random() * 0.3)
+    // 2. Load Pending Reconciliations Count
+    const localReconsStr = localStorage.getItem('raja-aksesoris-reconciliations') || '[]'
+    let localRecons: any[] = []
+    try {
+      localRecons = JSON.parse(localReconsStr)
+    } catch (e) {
+      console.error(e)
+    }
+    if (activeBranchId) {
+      localRecons = localRecons.filter(r => String(r.branchId) === String(activeBranchId))
+    }
+    const pendingReconciliationCount = localRecons.filter(r => {
+      const rDate = new Date(r.date)
+      return (r.status === 'pending' || r.status === 'discrepancy') &&
+             rDate.getMonth() === currentMonth && rDate.getFullYear() === currentYear
+    }).length
+
+    // 3. Load Petty Cash Expenses this month
+    const localPCStr = localStorage.getItem('raja-aksesoris-petty-cash') || '[]'
+    let localPC: any[] = []
+    try {
+      localPC = JSON.parse(localPCStr)
+    } catch (e) {
+      console.error(e)
+    }
+    if (activeBranchId) {
+      localPC = localPC.filter(t => String(t.branchId) === String(activeBranchId))
+    }
+    let monthExpenses = 0
+    localPC.forEach(item => {
+      const itemDate = new Date(item.dateStr)
+      if (itemDate.getMonth() === currentMonth && itemDate.getFullYear() === currentYear && item.type === 'expense') {
+        monthExpenses += item.amount || 0
+      }
+    })
 
     setStats({
-      todaySales: todayTotal,
-      monthSales: monthTotal,
-      prevMonthSales: Math.round(prevMonthTotal),
-      pendingReconciliation: Math.floor(Math.random() * 8) + 2,
-      monthExpenses: Math.round(monthTotal * 0.15),
+      todaySales,
+      monthSales,
+      prevMonthSales,
+      pendingReconciliation: pendingReconciliationCount,
+      monthExpenses
     })
+  }
+
+  const loadDashboardData = async () => {
+    setLoading(true)
+    if (isSupabaseConfigured) {
+      try {
+        const supabase = createClient()
+        if (supabase) {
+          const now = new Date()
+          const currentMonth = now.getMonth()
+          const currentYear = now.getFullYear()
+          
+          const startDate = new Date(currentYear, currentMonth, 1).toISOString().split('T')[0]
+          const endDate = new Date(currentYear, currentMonth + 1, 0).toISOString().split('T')[0]
+          
+          const prevStartDate = new Date(currentYear, currentMonth - 1, 1).toISOString().split('T')[0]
+          const prevEndDate = new Date(currentYear, currentMonth, 0).toISOString().split('T')[0]
+          
+          const todayStr = now.toISOString().split('T')[0]
+
+          const activeBranchId = selectedBranch?.id || (typeof selectedBranch === 'string' ? selectedBranch : undefined)
+
+          // 1. Fetch Daily Sales
+          let salesQuery = supabase
+            .from('daily_sales')
+            .select(`
+              sale_date,
+              branch_id,
+              amount,
+              payment_methods (id, name),
+              branches (name)
+            `)
+            .gte('sale_date', prevStartDate)
+            .lte('sale_date', endDate)
+
+          if (activeBranchId) {
+            salesQuery = salesQuery.eq('branch_id', activeBranchId)
+          }
+
+          const { data: salesData, error: salesError } = await salesQuery
+          if (salesError) throw salesError
+
+          let todaySales = 0
+          let monthSales = 0
+          let prevMonthSales = 0
+
+          const dailyMap: Record<number, number> = {}
+          const maxDay = now.getDate()
+          for (let i = 1; i <= maxDay; i++) {
+            dailyMap[i] = 0
+          }
+
+          const branchMap: Record<string, number> = {}
+          branches.forEach(b => {
+            branchMap[b.name] = 0
+          })
+
+          const paymentMap: Record<string, number> = {}
+
+          if (salesData) {
+            salesData.forEach((row: any) => {
+              const rowDateStr = row.sale_date
+              const rowDate = new Date(rowDateStr)
+              const amount = parseFloat(row.amount) || 0
+              const rowMonth = rowDate.getMonth()
+              const rowYear = rowDate.getFullYear()
+              const rowDay = rowDate.getDate()
+
+              if (rowDateStr === todayStr) {
+                todaySales += amount
+              }
+
+              if (rowMonth === currentMonth && rowYear === currentYear) {
+                monthSales += amount
+                dailyMap[rowDay] = (dailyMap[rowDay] || 0) + amount
+                
+                const branchName = row.branches?.name || 'Unknown'
+                branchMap[branchName] = (branchMap[branchName] || 0) + amount
+
+                const methodName = row.payment_methods?.name || 'Unknown'
+                paymentMap[methodName] = (paymentMap[methodName] || 0) + amount
+              }
+
+              if (rowMonth === (currentMonth === 0 ? 11 : currentMonth - 1) && rowYear === (currentMonth === 0 ? currentYear - 1 : currentYear)) {
+                prevMonthSales += amount
+              }
+            })
+          }
+
+          const dailyData: DailySalesDataPoint[] = []
+          for (let i = 1; i <= maxDay; i++) {
+            dailyData.push({
+              tanggal: `${i}`,
+              omset: dailyMap[i] || 0
+            })
+          }
+          setDailySalesData(dailyData)
+
+          const branchSalesDataPoints: BranchSalesDataPoint[] = Object.entries(branchMap).map(([name, omset]) => ({
+            cabang: name,
+            omset
+          }))
+          setBranchSalesData(branchSalesDataPoints)
+
+          const paymentBreakdownData: PaymentBreakdownItem[] = Object.entries(paymentMap).map(([name, value]) => ({
+            name,
+            value
+          }))
+          setPaymentBreakdown(paymentBreakdownData)
+
+          // 2. Fetch Pending Reconciliations
+          let reconQuery = supabase
+            .from('reconciliations')
+            .select('id', { count: 'exact', head: true })
+            .or('status.eq.pending,status.eq.discrepancy')
+            .gte('sale_date', startDate)
+            .lte('sale_date', endDate)
+
+          if (activeBranchId) {
+            reconQuery = reconQuery.eq('branch_id', activeBranchId)
+          }
+
+          const { count: pendingCount, error: reconError } = await reconQuery
+          if (reconError) throw reconError
+
+          // 3. Fetch Petty Cash Expenses
+          let pcQuery = supabase
+            .from('petty_cash')
+            .select('amount')
+            .eq('type', 'expense')
+            .gte('transaction_date', startDate)
+            .lte('transaction_date', endDate)
+
+          if (activeBranchId) {
+            pcQuery = pcQuery.eq('branch_id', activeBranchId)
+          }
+
+          const { data: pcData, error: pcError } = await pcQuery
+          if (pcError) throw pcError
+
+          let monthExpenses = 0
+          if (pcData) {
+            pcData.forEach((row: any) => {
+              monthExpenses += parseFloat(row.amount) || 0
+            })
+          }
+
+          setStats({
+            todaySales,
+            monthSales,
+            prevMonthSales,
+            pendingReconciliation: pendingCount || 0,
+            monthExpenses
+          })
+        }
+      } catch (err) {
+        console.error('Failed to load dashboard data from Supabase:', err)
+      } finally {
+        setLoading(false)
+      }
+    } else {
+      // Demo Mode
+      try {
+        loadRealData()
+      } catch (err) {
+        console.error('Failed to load local dashboard data:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
   }
 
   const monthTrend = useMemo(() => {
